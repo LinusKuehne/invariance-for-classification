@@ -1,0 +1,88 @@
+[project]
+name = "invariance-for-classification"
+version = "0.1.0"
+description = "Invariance from a causality/robustness perspective for classification problems."
+authors = [{ name = "Linus Kuehne" }]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+    "jupyter>=1.0",
+    "jupyterlab>=4.2",
+    "notebook>=7.2",
+    "ipykernel>=6.29",
+    "ipython>=8.26",
+    "ipywidgets>=8.1",
+    "jupyter-console>=6.6",
+    "cvxpy>=1.7.5",    
+    "torch>=2.4"
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.9",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+# General Ruff settings
+line-length = 88
+indent-width = 4
+target-version = "py312"
+fix = true
+
+# Files and directories to exclude from linting/formatting
+extend-exclude = [
+    "data",
+    "notebooks",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# Linting rule selection
+# E: pycodestyle
+# F: pyflakes
+# I: import sorting
+# B: flake8-bugbear
+select = ["E", "F", "I", "B"]
+ignore = [
+    "E501",  # line length (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "sqlalchemy.orm.declared_attr"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+docstring-code-format = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+ignore_missing_imports = true
+strict_optional = true
+python_version = "3.12"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
