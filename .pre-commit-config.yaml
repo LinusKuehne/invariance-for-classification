@@ -15,3 +15,14 @@ repos:
       - id: check-json
       - id: end-of-file-fixer
       - id: trailing-whitespace
+
+  # Run tests locally
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: venv/bin/pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true

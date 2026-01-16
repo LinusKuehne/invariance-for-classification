@@ -41,7 +41,7 @@ class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
         return self.classes_[np.argmax(proba, axis=1)]
 
 
-class StabilizedClassificationClassifier(BaseEstimator, ClassifierMixin):
+class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
     """
     Stabilized classification classifier
 
@@ -101,18 +101,34 @@ class StabilizedClassificationClassifier(BaseEstimator, ClassifierMixin):
         self.verbose = verbose
         self.random_state = random_state
 
+    def _more_tags(self):
+        return {"binary_only": True}
+
     def fit(self, X, y=None, environment=None):
         """
-        Fit the model
+        Fit the model.
 
         Parameters
         ----------
         X : array-like or DataFrame of shape (n_samples, n_features)
-            Training data
+            Training data. If a DataFrame is provided, you may pass column names
+            for `y` and `environment`; those columns are removed from `X` and the
+            remaining columns are used as features.
+
+            Example
+            -------
+            If ``df`` has columns ``X1, X2, E, Env, Y`` and you do
+            ``fit(X_train, y="Y", environment="Env")``, then ``X1``,
+            ``X2`` and ``E`` are used as predictors. So make sure sure to
+            drop columns (like `E` that are neither predictors, label, nor
+            environment. Columns ``Y`` and ``Env`` are extracted
+            as target and environment and are not used as predictors.
+
         y : array-like or str, optional
-            Target values (binary) or column name in X
+            Target values (binary) or column name in `X`.
+
         environment : array-like or str
-            environment labels or column name in X
+            Environment labels or column name in `X`. Must be provided.
 
         Returns
         -------
@@ -182,7 +198,7 @@ class StabilizedClassificationClassifier(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X):
         """Predict class probabilities"""
         check_is_fitted(self)
-        X = check_array(X)
+        X = self._validate_X(X)
 
         n_samples = X.shape[0]
         sum_proba = np.zeros((n_samples, len(self.classes_)))
@@ -205,6 +221,7 @@ class StabilizedClassificationClassifier(BaseEstimator, ClassifierMixin):
     def predict(self, X):
         """predict class labels with a 0.5 threshold"""
         check_is_fitted(self)
+        X = self._validate_X(X)
         proba = self.predict_proba(X)
 
         if len(self.classes_) == 1:
@@ -242,10 +259,28 @@ class StabilizedClassificationClassifier(BaseEstimator, ClassifierMixin):
         X, y = check_X_y(X, y)
 
         if environment is None:
-            raise ValueError("Environment labels must be provided.")
+            raise ValueError(
+                "Environment labels must be provided for stabilized classification."
+            )
+
         environment = check_array(environment, ensure_2d=False, dtype=None)
 
+        unique_envs = np.unique(environment)
+        if len(unique_envs) < 2:
+            raise ValueError(
+                f"Validation Error: Environment variable must contain at least 2 unique values. Found {len(unique_envs)} ({unique_envs})."
+            )
+
         return X, y, environment
+
+    def _validate_X(self, X):
+        X = check_array(X)
+        if hasattr(self, "n_features_in_") and X.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"X has {X.shape[1]} features, but {self.__class__.__name__} "
+                f"is expecting {self.n_features_in_} features as input."
+            )
+        return X
 
     def _find_invariant_subsets(
         self, X, y, environment, n_features, inv_test, base_estimator
