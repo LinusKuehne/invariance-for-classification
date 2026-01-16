@@ -210,3 +210,4 @@ settings.json
 *.R
 *.tex
 *.pdf
+dev_scripts/

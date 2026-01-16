@@ -1,8 +1,9 @@
 import logging
 from itertools import chain, combinations
-from typing import Optional
+from typing import Optional, cast
 
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import log_loss
@@ -13,6 +14,126 @@ from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 from ..invariance_tests import InvarianceTest, InvariantResidualDistributionTest
 
 logger = logging.getLogger(__name__)
+
+
+def _fit_model_helper(
+    X: np.ndarray, y: np.ndarray, base_estimator, force_n_jobs_1: bool = False
+):
+    """
+    Helper to fit a model on a subset of features.
+    Handles empty sets and n_jobs configuration.
+    """
+    if X.shape[1] == 0:
+        model = _EmptySetClassifier()
+    else:
+        model = clone(base_estimator)
+        if force_n_jobs_1 and hasattr(model, "n_jobs"):
+            model.set_params(n_jobs=1)
+
+    model.fit(X, y)
+    return model
+
+
+def _get_aligned_proba(model, X: np.ndarray, use_oob: bool = True) -> np.ndarray:
+    """
+    Get probability estimates aligned to encoded labels [0, 1].
+
+    Returns an array of shape (n_samples, 2) where column 0 corresponds to the
+    encoded class 0 and column 1 corresponds to encoded class 1.
+    """
+    if use_oob and hasattr(model, "oob_decision_function_"):
+        proba = model.oob_decision_function_
+        if np.isnan(proba).any():
+            fallback = model.predict_proba(X)
+            proba = np.where(np.isnan(proba), fallback, proba)
+    else:
+        proba = model.predict_proba(X)
+
+    proba = np.asarray(proba)
+    if proba.ndim == 1:
+        proba = np.column_stack([1.0 - proba, proba])
+
+    aligned = np.zeros((proba.shape[0], 2), dtype=float)
+    classes = getattr(model, "classes_", np.array([0, 1]))
+    for i, class_label in enumerate(classes):
+        if class_label in (0, 1):
+            aligned[:, int(class_label)] = proba[:, i]
+
+    row_sums = aligned.sum(axis=1)
+    missing = row_sums == 0
+    if np.any(missing):
+        aligned[missing] = 0.5
+        row_sums[missing] = 1.0
+    aligned = aligned / row_sums[:, None]
+    return aligned
+
+
+def _compute_score_helper(
+    model, X: np.ndarray, y: np.ndarray, use_oob: bool = True
+) -> float:
+    """
+    Compute score (negative log loss) for binary classification.
+    """
+    # y must be 0/1 integers
+    proba = _get_aligned_proba(model, X, use_oob=use_oob)
+    return float(-log_loss(y, proba, labels=[0, 1]))
+
+
+def _subset_worker(subset, X, y, environment, inv_test, base_estimator, alpha_inv):
+    subset = list(subset)
+    X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
+
+    p_value = inv_test.test(X_S, y, environment)
+
+    stat = None
+    if p_value >= alpha_inv:
+        # fit model
+        # here, we want oob_score=True for RF (default)
+        model = clone(base_estimator)
+        if isinstance(model, RandomForestClassifier):
+            model.set_params(oob_score=True)
+
+        model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
+
+        # compute predictiveness score
+        score = _compute_score_helper(model, X_S, y, use_oob=True)
+
+        stat = {
+            "subset": subset,
+            "p_value": p_value,
+            "score": score,
+            "model": model,
+        }
+
+    return subset, p_value, stat
+
+
+def _bootstrap_worker(seed, X, y, S_max, base_estimator):
+    rng = np.random.RandomState(seed)
+    n_samples = X.shape[0]
+    indices = np.asarray(resample(np.arange(n_samples), replace=True, random_state=rng))
+    oob_indices = np.setdiff1d(np.arange(n_samples), indices)
+
+    if len(oob_indices) == 0:
+        return None
+
+    X_train, y_train = X[indices], y[indices]
+    X_test, y_test = X[oob_indices], y[oob_indices]
+
+    X_S_train = X_train[:, S_max] if len(S_max) > 0 else np.zeros((len(indices), 0))
+    X_S_test = X_test[:, S_max] if len(S_max) > 0 else np.zeros((len(oob_indices), 0))
+
+    # prepare model
+    bs_model = clone(base_estimator)
+    if isinstance(bs_model, RandomForestClassifier):
+        bs_model.set_params(oob_score=False)
+
+    bs_model = _fit_model_helper(X_S_train, y_train, bs_model, force_n_jobs_1=True)
+
+    # predictiveness score (use_oob=False because we have explicit hold-out set)
+    score = _compute_score_helper(bs_model, X_S_test, y_test, use_oob=False)
+
+    return score
 
 
 class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
@@ -92,6 +213,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         n_bootstrap: int = 100,
         verbose: int = 0,
         random_state: Optional[int] = None,
+        n_jobs: Optional[int] = None,
     ):
         self.alpha_inv = alpha_inv
         self.alpha_pred = alpha_pred
@@ -100,7 +222,9 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self.n_bootstrap = n_bootstrap
         self.verbose = verbose
         self.random_state = random_state
+        self.n_jobs = n_jobs
 
+    # sklearn model interface
     def _more_tags(self):
         return {"binary_only": True}
 
@@ -138,20 +262,20 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
         self.random_state_ = check_random_state(self.random_state)
 
-        # Encoder target y to 0..K-1 integers
+        # encode target y to 0/1 integers
         self.le_ = LabelEncoder()
         y_encoded = self.le_.fit_transform(y)
         self.classes_ = self.le_.classes_
 
-        if len(self.classes_) > 2:
+        if len(self.classes_) != 2:
             raise ValueError(
-                f"Only binary classification is supported. Found classes: {self.classes_}"
+                "Only binary classification with exactly 2 classes is supported. "
+                f"Found classes: {self.classes_}"
             )
 
-        n_features = X.shape[1]
-        self.n_features_in_ = n_features
+        self.n_features_in_ = X.shape[1]
 
-        # resolve dependencies
+        # determine base estimator and invariance test
         base_estimator = self.estimator or RandomForestClassifier(
             n_estimators=100, oob_score=True, random_state=self.random_state
         )
@@ -159,9 +283,14 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             estimator=base_estimator
         )
 
+        # keep invariance-test estimator single-threaded to avoid nested parallelism
+        inv_estimator = getattr(inv_test, "estimator", None)
+        if inv_estimator is not None and hasattr(inv_estimator, "n_jobs"):
+            inv_estimator.set_params(n_jobs=1)
+
         # 1. & 2.: determine invariant subsets
         subset_stats, all_p_values = self._find_invariant_subsets(
-            X, y_encoded, environment, n_features, inv_test, base_estimator
+            X, y_encoded, environment, self.n_features_in_, inv_test, base_estimator
         )
 
         # fallback if no invariant subsets found
@@ -182,7 +311,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             stat for stat in subset_stats if stat["score"] >= cutoff
         ]
 
-        # fallback if bootstrap variance excluded even the best model (rare)
+        # fallback if bootstrap variance excluded best model (rare)
         if not self.active_subsets_:
             best_model_stat = max(subset_stats, key=lambda x: x["score"])
             self.active_subsets_ = [best_model_stat]
@@ -192,7 +321,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         for stat in self.active_subsets_:
             stat["weight"] = 1.0 / n_active
 
-        self.classes_ = self.active_subsets_[0]["model"].classes_
         return self
 
     def predict_proba(self, X):
@@ -201,19 +329,16 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         X = self._validate_X(X)
 
         n_samples = X.shape[0]
-        sum_proba = np.zeros((n_samples, len(self.classes_)))
+        sum_proba = np.zeros((n_samples, 2), dtype=float)
 
         for stat in self.active_subsets_:
             subset = stat["subset"]
             model = stat["model"]
             weight = stat["weight"]
 
-            if len(subset) == 0:
-                proba = model.predict_proba(np.zeros((n_samples, 0)))
-            else:
-                proba = model.predict_proba(X[:, subset])
+            X_tilde = X[:, subset] if len(subset) > 0 else np.zeros((n_samples, 0))
 
-            proba = self._align_proba(model, proba)
+            proba = _get_aligned_proba(model, X_tilde, use_oob=False)
             sum_proba += weight * proba
 
         return sum_proba
@@ -224,12 +349,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         X = self._validate_X(X)
         proba = self.predict_proba(X)
 
-        if len(self.classes_) == 1:
-            return np.full(X.shape[0], self.classes_[0])
-
-        # proba has columns aligned with self.classes_ (0, 1) if binary
-        # We want the column corresponding to the "positive" class (encoded as 1)
-        # Since we validated binary, column 1 is the positive class.
         prob_pos = proba[:, 1]
 
         predictions_int = (prob_pos > 0.5).astype(int)
@@ -244,12 +363,12 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         if hasattr(X, "columns") and hasattr(X, "drop"):
             if isinstance(y, str):
                 y_col = y
-                y = X[y_col].values
+                y = X[y_col].to_numpy()
                 X = X.drop(columns=[y_col])
 
             if isinstance(environment, str):
                 env_col = environment
-                environment = X[env_col].values
+                environment = X[env_col].to_numpy()
                 X = X.drop(columns=[env_col])
 
         if y is None:
@@ -293,50 +412,44 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             combinations(all_indices, r) for r in range(0, n_features + 1)
         )
 
-        for subset in feature_subsets:
-            subset = list(subset)
-            X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
+        results = cast(
+            list[tuple[list[int], float, Optional[dict]]],
+            Parallel(n_jobs=self.n_jobs)(
+                delayed(_subset_worker)(
+                    subset,
+                    X,
+                    y,
+                    environment,
+                    inv_test,
+                    base_estimator,
+                    self.alpha_inv,
+                )
+                for subset in feature_subsets
+            ),
+        )
 
-            p_value = inv_test.test(X_S, y, environment)
+        for subset, p_value, stat in results:
             all_p_values.append((subset, p_value))
 
             if self.verbose:
                 if self.verbose > 1:
                     logger.debug(f"Subset {subset}: p-value={p_value:.4f}")
 
-            if p_value >= self.alpha_inv:
-                model = self._fit_subset_model(X_S, y, base_estimator)
-                score = self._compute_pred_score(model, X_S, y)
-                subset_stats.append(
-                    {
-                        "subset": subset,
-                        "p_value": p_value,
-                        "score": score,
-                        "model": model,
-                    }
-                )
+            if stat is not None:
+                subset_stats.append(stat)
                 if self.verbose:
                     logger.info(
-                        f"Subset {subset} is invariant (p={p_value:.4f}). Score={score:.4f}"
+                        f"Subset {subset} is invariant (p={p_value:.4f}). Score={stat['score']:.4f}"
                     )
 
         return subset_stats, all_p_values
 
-    def _fit_subset_model(self, X_S, y, base_estimator):
-        if X_S.shape[1] == 0:
-            model = _EmptySetClassifier()
-        else:
-            model = clone(base_estimator)
-            if isinstance(model, RandomForestClassifier):
-                model.set_params(oob_score=True)
-        model.fit(X_S, y)
-        return model
-
     def _apply_fallback(self, X, y, all_p_values, base_estimator):
+        """Fallback to the subset with the highest p-value in case no invariant subsets found."""
         best_subset, max_p = max(all_p_values, key=lambda x: x[1])
         X_S = X[:, best_subset] if len(best_subset) > 0 else np.zeros((X.shape[0], 0))
-        model = self._fit_subset_model(X_S, y, base_estimator)
-        score = self._compute_pred_score(model, X_S, y)
+        model = _fit_model_helper(X_S, y, base_estimator)
+        score = _compute_score_helper(model, X_S, y, use_oob=True)
         return [
             {"subset": best_subset, "p_value": max_p, "score": score, "model": model}
         ]
@@ -346,89 +459,21 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             return -np.inf
 
         S_max = max(subset_stats, key=lambda x: x["score"])["subset"]
-        bootstrap_scores = []
 
-        n_samples = X.shape[0]
-        # bootstrap loop
-        for _ in range(self.n_bootstrap):
-            # 1. resample
-            indices = resample(
-                np.arange(n_samples), replace=True, random_state=self.random_state_
-            )
-            # fix for type checking: explicitly cast to array
-            indices = np.asarray(indices)
-            oob_indices = np.setdiff1d(np.arange(n_samples), indices)
+        # generate seeds for each bootstrap iteration
+        seeds = self.random_state_.randint(
+            0, np.iinfo(np.int32).max, size=self.n_bootstrap
+        )
 
-            if len(oob_indices) == 0:
-                continue  # skip if full sample
+        bootstrap_scores = Parallel(n_jobs=self.n_jobs)(
+            delayed(_bootstrap_worker)(seed, X, y, S_max, base_estimator)
+            for seed in seeds
+        )
 
-            X_train, y_train = X[indices], y[indices]
-            X_test, y_test = X[oob_indices], y[oob_indices]
-
-            # 2. fit on bootstrap
-            X_S_train = (
-                X_train[:, S_max] if len(S_max) > 0 else np.zeros((len(indices), 0))
-            )
-            X_S_test = (
-                X_test[:, S_max] if len(S_max) > 0 else np.zeros((len(oob_indices), 0))
-            )
-
-            if len(S_max) == 0:
-                bs_model = _EmptySetClassifier()
-            else:
-                bs_model = clone(base_estimator)
-                if isinstance(bs_model, RandomForestClassifier):
-                    # disable internal OOB since we use explicit hold-out
-                    bs_model.set_params(oob_score=False)
-
-            bs_model.fit(X_S_train, y_train)
-
-            # 3. score on hold-out
-            score = self._compute_pred_score(bs_model, X_S_test, y_test, use_oob=False)
-            bootstrap_scores.append(score)
+        # filter None values (if oob_indices was empty)
+        bootstrap_scores = [s for s in bootstrap_scores if s is not None]
 
         if not bootstrap_scores:
             return -np.inf
 
         return np.quantile(bootstrap_scores, self.alpha_pred)
-
-    def _compute_pred_score(self, model, X, y, use_oob: bool = True):
-        """compute negative log loss (higher is better)"""
-        proba = self._get_model_proba(model, X, use_oob=use_oob)
-        # proba is already aligned to 0,1 classes via _align_proba in _get_model_proba
-
-        if len(self.classes_) == 1:
-            # Degenerate case: only one class present
-            eps = 1e-15
-            col_idx = 0
-            y_prob = np.clip(proba[:, col_idx], eps, 1 - eps)
-            return -np.mean(np.log(y_prob))
-
-        # y is 0/1 integers here
-        return -log_loss(y, proba, labels=[0, 1])
-
-    def _get_model_proba(self, model, X, use_oob: bool) -> np.ndarray:
-        if use_oob and hasattr(model, "oob_decision_function_"):
-            proba = model.oob_decision_function_
-            if np.isnan(proba).any():
-                fallback = model.predict_proba(X)
-                proba = np.where(np.isnan(proba), fallback, proba)
-        else:
-            proba = model.predict_proba(X)
-        return self._align_proba(model, proba)
-
-    def _align_proba(self, model, proba: np.ndarray) -> np.ndarray:
-        """Align a model's probability outputs to self.classes_."""
-        # The internal model is trained on integers 0..K-1.
-        # Its classes_ are a subset of integers.
-        # Each column i in proba corresponds to class model.classes_[i]
-        # We need to map this to the column index in 'aligned'.
-
-        aligned = np.zeros((proba.shape[0], len(self.classes_)))
-        for i, class_int in enumerate(model.classes_):
-            # class_int is 0 or 1.
-            # Since we used LabelEncoder, integer 0 is at index 0 of self.classes_
-            # and integer 1 is at index 1.
-            aligned[:, int(class_int)] = proba[:, i]
-
-        return aligned
