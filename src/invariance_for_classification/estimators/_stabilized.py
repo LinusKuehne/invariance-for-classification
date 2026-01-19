@@ -241,12 +241,13 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
             Example
             -------
-            If ``df`` has columns ``X1, X2, E, Env, Y`` and you do
-            ``fit(X_train, y="Y", environment="Env")``, then ``X1``,
-            ``X2`` and ``E`` are used as predictors. So make sure sure to
-            drop columns (like `E` that are neither predictors, label, nor
-            environment. Columns ``Y`` and ``Env`` are extracted
+            If ``df`` has columns ``X1, X2, E, Y`` and you do
+            ``fit(df, y="Y", environment="E")``, then ``X1`` and ``X2``
+            are used as predictors. Columns ``Y`` and ``E`` are extracted
             as target and environment and are not used as predictors.
+
+            Make sure to drop any extra columns that are neither predictors,
+            the label, nor the environment.
 
         y : array-like or str, optional
             Target values (binary) or column name in `X`.

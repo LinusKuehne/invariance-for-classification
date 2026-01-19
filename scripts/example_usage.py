@@ -8,7 +8,7 @@ from invariance_for_classification.generate_data.synthetic_DGP import generate_s
 
 logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 
-df = generate_scm_data(n_per_env=500)
+df, int_df = generate_scm_data(n_per_env=500, return_int_values=True)
 
 # 2. Initialize the Stabilized Classification Classifier
 clf = StabilizedClassificationClassifier(
@@ -18,8 +18,8 @@ clf = StabilizedClassificationClassifier(
 # 3. Fit (DataFrame input)
 
 # Using dataframe input directly
-# Drops Env, Y AND E (since E is environment intervention, not a feature)
-clf.fit(df.drop(columns=["E"]), y="Y", environment="Env")
+# E is the environment index (not a feature).
+clf.fit(df, y="Y", environment="E")
 
 # 4. Inspect results
 
@@ -33,8 +33,10 @@ if hasattr(clf, "active_subsets_"):
 
 # 5. Predict
 # Test prediction on new data:
-df_test = generate_scm_data(n_per_env=100, env_values=[3])
-X_test = df_test.drop(columns=["Env", "Y"]).values
+df_test, int_df_test = generate_scm_data(
+    n_per_env=100, int_vals=[3.0], return_int_values=True
+)
+X_test = df_test.drop(columns=["E", "Y"]).values
 y_test = df_test["Y"].values
 
 preds = clf.predict(X_test)

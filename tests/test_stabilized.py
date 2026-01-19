@@ -32,7 +32,7 @@ def test_environment_required():
     """Environment must be provided explicitly."""
     df = generate_scm_data(n_per_env=1000, seed=42)
     clf = StabilizedClassificationClassifier()
-    X = df.drop(columns=["E"]).values
+    X = df.drop(columns=["Y", "E"]).values
     y = df["Y"].values
 
     with pytest.raises(ValueError, match="Environment labels must be provided"):
@@ -97,9 +97,9 @@ def test_input_validation_mismatched_lengths():
     """Test that mismatched lengths between X and y raise ValueError."""
     df = generate_scm_data(n_per_env=100, seed=42)
     clf = StabilizedClassificationClassifier()
-    X = df.drop(columns=["E"]).values
+    X = df.drop(columns=["Y", "E"]).values
     y = df["Y"].values[:-1]  # One element short
-    env = df["Env"].values
+    env = df["E"].values
 
     with pytest.raises(ValueError):
         clf.fit(X, y, environment=env)
@@ -109,7 +109,7 @@ def test_single_environment_error():
     """Test that a single environment raises a ValueError."""
     df = generate_scm_data(n_per_env=100, seed=42)
     clf = StabilizedClassificationClassifier()
-    X = df.drop(columns=["E"]).values
+    X = df.drop(columns=["Y", "E"]).values
     y = df["Y"].values
     env = np.zeros_like(y)  # All same
 
@@ -127,8 +127,7 @@ def test_fit_stabilized_classifier(inv_test_cls):
         n_bootstrap=10, verbose=0, invariance_test=inv_test_instance
     )
 
-    X_train = df.drop(columns=["E"])
-    clf.fit(X_train, y="Y", environment="Env")
+    clf.fit(df, y="Y", environment="E")
 
     check_is_fitted(clf)
     assert hasattr(clf, "active_subsets_")
@@ -140,10 +139,9 @@ def test_prediction_shape():
     df = generate_scm_data(n_per_env=100, seed=42)
     clf = StabilizedClassificationClassifier(n_bootstrap=10)
 
-    X_train = df.drop(columns=["E"])
-    clf.fit(X_train, y="Y", environment="Env")
+    clf.fit(df, y="Y", environment="E")
 
-    X_test = df.drop(columns=["E", "Y", "Env"]).values
+    X_test = df.drop(columns=["E", "Y"]).values
     preds = clf.predict(X_test)
 
     assert preds.shape == (len(df),)
@@ -166,9 +164,7 @@ def test_finds_invariant_subset(inv_test_cls):
     clf = StabilizedClassificationClassifier(
         alpha_inv=0.05, n_bootstrap=20, random_state=42
     )
-    X_train = df_large.drop(columns=["E"])
-
-    X, y, environment = clf._validate_input(X_train, y="Y", environment="Env")
+    X, y, environment = clf._validate_input(df_large, y="Y", environment="E")
     # _find_invariant_subsets expects encoded classes to be initialized
     clf.le_ = LabelEncoder()
     y = clf.le_.fit_transform(y)
@@ -204,10 +200,9 @@ def test_predict_proba():
     """Test predict_proba method."""
     df = generate_scm_data(n_per_env=1000, seed=42)
     clf = StabilizedClassificationClassifier(n_bootstrap=10)
-    X_train = df.drop(columns=["E"])
-    clf.fit(X_train, y="Y", environment="Env")
+    clf.fit(df, y="Y", environment="E")
 
-    X_test = df.drop(columns=["E", "Y", "Env"]).values
+    X_test = df.drop(columns=["E", "Y"]).values
     proba = clf.predict_proba(X_test)
 
     assert proba.shape == (len(df), 2)
@@ -275,9 +270,9 @@ def test_no_invariant_fallback():
         invariance_test=RejectAllTest(), alpha_inv=0.05, verbose=0
     )
 
-    X = df.drop(columns=["E"]).values
+    X = df.drop(columns=["Y", "E"]).values
     y = df["Y"].values
-    env = df["Env"].values
+    env = df["E"].values
 
     clf.fit(X, y, environment=env)
 
@@ -302,13 +297,13 @@ def test_performance_above_random():
         n_bootstrap=20, alpha_inv=0.05, random_state=42
     )
 
-    X_train = df_train.drop(columns=["E", "Y", "Env"]).values
+    X_train = df_train.drop(columns=["E", "Y"]).values
     y_train = df_train["Y"].values
-    env_train = df_train["Env"].values
+    env_train = df_train["E"].values
 
     clf.fit(X_train, y_train, environment=env_train)
 
-    X_test = df_test.drop(columns=["E", "Y", "Env"]).values
+    X_test = df_test.drop(columns=["E", "Y"]).values
     y_test = df_test["Y"].to_numpy()
 
     # Score is accuracy
