@@ -111,10 +111,7 @@ def _bootstrap_worker(seed, X, y, S_max, pred_classifier):
 
 
 class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
-    """
-    Internal dummy classifier for the empty feature set
-    Always predicts the class prior distribution observed during fit
-    """
+    """Internal dummy classifier for the empty feature set (use mean of class 1)."""
 
     def fit(self, X, y):
         self.classes_ = np.unique(y)
