@@ -1,72 +1,47 @@
+"""Code for Tram-GCM test (Python implementation of parts of https://github.com/LucasKook/tramicp)."""
+
 import numpy as np
-import pandas as pd
+from scipy import stats
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import OneHotEncoder
 
 from ._base import InvarianceTest
-
-try:
-    import rpy2.robjects as ro
-    from rpy2.robjects import pandas2ri
-    from rpy2.robjects.conversion import localconverter
-    from rpy2.robjects.packages import importr
-except ImportError:
-    ro = None
-    pandas2ri = None
-    localconverter = None
-    importr = None
 
 
 class TramGcmTest(InvarianceTest):
     """
-    Tram-GCM test
+    Tram-GCM test (Python implementation)
 
-    Tests the null hypothesis that the invariant set is the given set of predictors.
-    Uses the R package 'tramicp'.
+    Tests the null hypothesis that the given set of predictors is invariant.
+    Re-implementation of the TRAM-GCM test from the R package 'tramicp' for binary classification in Python.
 
     Parameters
     ----------
     test_classifier_type : str, default="RF"
-        "RF" for random forest (rangerICP), "LR" for logistic regression (glmICP).
+        "RF" for random forest (rangerICP equivalent),
+        "LR" for logistic regression (glmICP equivalent).
+
+    Notes
+    -----
+    For RF mode: tramicp's rangerICP passes Y as numeric (not factor) to R's ranger,
+    so it uses regression mode. We replicate this by using RandomForestRegressor.
+    The residuals are Y - prediction where prediction approximates E[Y|X].
+
+    For LR mode: tramicp's glmICP uses binomial GLM with response residuals (Y - fitted_prob).
+    We use LogisticRegression to get fitted probabilities.
     """
 
     def __init__(
         self,
         test_classifier_type: str = "RF",
     ):
-        if ro is None or importr is None:
-            raise ImportError("rpy2 is required for TramGcmTest")
-
         self.test_classifier_type = test_classifier_type
         self.name = "tram_gcm"
 
-        try:
-            # Verify package availability (and cache it)
-            self._tramicp = importr("tramicp")
-        except Exception as e:
-            raise ImportError(
-                f"R package 'tramicp' not found or could not be loaded: {e}"
-            ) from e
-
-    @property
-    def tramicp(self):
-        # Lazy load if not present (e.g. after unpickling)
-        if getattr(self, "_tramicp", None) is None:
-            if importr is not None:
-                self._tramicp = importr("tramicp")
-        return self._tramicp
-
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        # Remove unpicklable R object
-        state.pop("_tramicp", None)
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        # _tramicp is left undefined/None, will be loaded by property
-
     def test(self, X: np.ndarray, y: np.ndarray, E: np.ndarray) -> float:
         """
-        Perform the Tram-GCM test.
+        Perform the TRAM-GCM test.
 
         Parameters
         ----------
@@ -82,107 +57,137 @@ class TramGcmTest(InvarianceTest):
         p_value : float
             p-value of Tram-GCM test
         """
+        # if only one environment, we cannot test invariance across environments
         if len(np.unique(E)) < 2:
             return 1.0
 
-        # Assert rpy2 modules are available (init would have failed otherwise)
-        assert ro is not None
-        assert pandas2ri is not None
-        assert localconverter is not None
+        n_samples, n_features = X.shape
 
-        _, n_features = X.shape
+        # --- Step 1: Compute residuals for Y ~ X ---
 
-        # construct DataFrame
-        # assign generic names X0, X1, ... to the predictors
-        feature_names = [f"X{i}" for i in range(n_features)]
-
-        # create a dict first to avoid fragmentation
-        data_dict = {name: X[:, i] for i, name in enumerate(feature_names)}
-        data_dict["Y"] = y
-
-        # convert E to string first to ensure it's treated as categorical/factor in R
-        data_dict["Env"] = E.astype(str)
-
-        df = pd.DataFrame(data_dict)
-
-        # explicitly mark Env as category for R factor conversion
-        df["Env"] = df["Env"].astype("category")
-
-        # select formula and target set name
+        # For RF: tramicp uses regression forest on numeric Y (not probability forest)
+        # For LR: tramicp uses binomial GLM with response residuals
         if n_features == 0:
-            formula_str = "Y ~ 1"
-            target_set_name = "Empty"
+            # null model: predict global mean everywhere
+            mean_y = np.mean(y)
+            y_hat = np.full_like(y, mean_y, dtype=float)
         else:
-            # join with '+' with no spaces, as per R code example
-            rhs = "+".join(feature_names)
-            formula_str = f"Y ~ {rhs}"
-            target_set_name = rhs
-
-        # convert to R DataFrame
-        with localconverter(ro.default_converter + pandas2ri.converter):
-            r_df = ro.conversion.py2rpy(df)
-
-        r_formula = ro.Formula(formula_str)
-
-        # the environment variable is "Env" in the dataframe
-        r_env_formula = ro.Formula("~ Env")
-
-        # Run the appropriate ICP function
-        try:
             if self.test_classifier_type == "RF":
-                res = self.tramicp.rangerICP(
-                    formula=r_formula,
-                    data=r_df,
-                    env=r_env_formula,
-                    test="gcm.test",
-                    verbose=False,
+                # tramicp's RANGER uses regression when Y is numeric (not a factor)
+                # Ranger defaults: mtry = floor(sqrt(p)), min.node.size = 5 for regression
+                mtry = max(1, int(np.sqrt(n_features)))
+                reg = RandomForestRegressor(
+                    n_estimators=500,
+                    max_features=mtry,
+                    min_samples_leaf=5,
+                    random_state=42,
+                    bootstrap=True,
                 )
+                reg.fit(X, y)
+                y_hat = reg.predict(X)
             elif self.test_classifier_type == "LR":
-                res = self.tramicp.glmICP(
-                    formula=r_formula,
-                    data=r_df,
-                    env=r_env_formula,
-                    family="binomial",
-                    verbose=False,
+                # 'tramicp' uses glm with family="binomial", which has no penalty by default
+                # in sklearn, LogisticRegression defaults to L2 penalty
+                # => use a large C (inverse regularization strength) to approximate unpenalized regression
+                clf = LogisticRegression(
+                    C=1e10, solver="lbfgs", max_iter=1000, random_state=42
                 )
+                clf.fit(X, y)
+                y_hat = clf.predict_proba(X)[:, 1]
             else:
                 raise ValueError(
                     f"Unknown test_classifier_type: {self.test_classifier_type}"
                 )
 
-            # Extract p-values
-            # returns a named vector
-            pvals_vec = self.tramicp.pvalues(res, "set")
-            pvals_dict = dict(zip(pvals_vec.names, pvals_vec, strict=True))
+        # residuals r_y = Y - E[Y|X]
+        r_y = y - y_hat
 
-            # Look up the p-value for the tested set
-            # We try exact match first
-            p_value = pvals_dict.get(target_set_name)
+        # --- Step 2: Compute residuals for E ~ X ---
 
-            if p_value is None:
-                # Fallback: try sorted keys if order differs
-                # (e.g. if tramicp reorders X1+X0 to X0+X1)
-                sorted_rhs = "+".join(sorted(feature_names))
-                p_value = pvals_dict.get(sorted_rhs)
+        # need to test independence between r_y and E given X
+        # done by checking correlation between r_y and residuals of E ~ X
 
-            if p_value is None:
-                # If still not found, this is unexpected for the full set test.
-                # We might be in a situation where variables were dropped?
-                # Raise error to debug
-                raise RuntimeError(
-                    f"Could not find p-value for set '{target_set_name}' in tramicp results. "
-                    f"Available keys: {list(pvals_dict.keys())}"
+        # prepare environment matrix
+        # 'tramicp' converts Env to model matrix (dummies) and drops intercept
+        if E.ndim == 1:
+            E_reshaped = E.reshape(-1, 1)
+            # one-hot encode, dropping first category to avoid perfect multicollinearity (k-1 dummies)
+            # matches R's model.matrix(~E) behavior after removing intercept
+            enc = OneHotEncoder(drop="first", sparse_output=False)
+            E_mat = enc.fit_transform(E_reshaped)
+        else:
+            E_mat = E
+
+        # if E is constant (e.g. only 1 level after filtering), E_mat might be empty
+        if E_mat.shape[1] == 0:
+            return 1.0
+
+        # regress each column of E on X
+        r_e_list = []
+        for i in range(E_mat.shape[1]):
+            e_col = E_mat[:, i]
+            if n_features == 0:
+                e_hat = np.mean(e_col)
+                res_e = e_col - e_hat
+            else:
+                # 'tramicp' uses RF for E ~ X (gcm.test default)
+                # even if E columns are binary dummies, they are treated as numeric targets in 'ranger'
+                # Ranger defaults: mtry = floor(sqrt(p)), min.node.size = 5 for regression
+                mtry = max(1, int(np.sqrt(n_features)))
+                rf_e = RandomForestRegressor(
+                    n_estimators=500,
+                    max_features=mtry,
+                    min_samples_leaf=5,
+                    random_state=42,
                 )
+                rf_e.fit(X, e_col)
+                e_pred = rf_e.predict(X)
+                res_e = e_col - e_pred
+            r_e_list.append(res_e)
 
-            # Handle R's NA (which comes as NaN in python float)
-            if np.isnan(p_value):
-                # As per provided R code, sample randomly if NA
-                return np.random.uniform(0.0, 1.0)
+        r_e = np.column_stack(r_e_list)
 
-            return float(p_value)
+        # --- Step 3: GCM test statistic ---
 
-        except Exception as e:
-            # If it's the specific RuntimeError above, re-raise
-            if "Could not find p-value" in str(e):
-                raise
-            raise RuntimeError(f"tramicp execution failed: {e}") from e
+        # R_mat[i, j] = r_y[i] * r_e[i, j]
+        # (broadcasting r_y across columns of r_e)
+        R_mat = r_e * r_y[:, np.newaxis]
+
+        # estimate cov matrix of R
+        # => use sample covariance (dividing by n) as in 'tramicp' code
+        R_mean = np.mean(R_mat, axis=0)
+        R_centered = R_mat - R_mean
+        Sigma = (R_centered.T @ R_centered) / n_samples
+
+        # compute Sigma^(-1/2) using eigendecomp
+        eigvals, eigvecs = np.linalg.eigh(Sigma)
+
+        # filter small eigenvalues to handle singularity
+        tol = 1e-12
+        mask = eigvals > tol
+
+        if not np.any(mask):
+            # if variance is effectively 0: can't compute statistic
+            # implies residuals are visibly 0 or constant
+            return 1.0
+
+        inv_sqrt_eigvals = np.zeros_like(eigvals)
+        inv_sqrt_eigvals[mask] = 1.0 / np.sqrt(eigvals[mask])
+
+        # construct Sigma^(-1/2)
+        SigInvHalf = eigvecs @ np.diag(inv_sqrt_eigvals) @ eigvecs.T
+
+        # T_stat = Sigma^(-1/2) * (1/sqrt(n)) * sum(R)
+        sum_R = np.sum(R_mat, axis=0)
+        t_stat_vec = SigInvHalf @ sum_R / np.sqrt(n_samples)
+
+        # final test statistic (squared norm)
+        test_stat = np.sum(t_stat_vec**2)
+
+        # p-value from Chi-squared distr
+        # dof is dimension of E (number of columns in E_mat)
+        dE = E_mat.shape[1]
+
+        p_value = stats.chi2.sf(test_stat, df=dE)
+
+        return float(p_value)
