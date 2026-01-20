@@ -13,8 +13,6 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import check_random_state, resample
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
-from ..invariance_tests import InvariantResidualDistributionTest
-
 logger = logging.getLogger(__name__)
 
 
@@ -266,9 +264,15 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             )
 
         if self.invariance_test == "inv_residual":
+            from ..invariance_tests import InvariantResidualDistributionTest
+
             inv_test = InvariantResidualDistributionTest(
                 test_classifier_type=self.test_classifier_type
             )
+        elif self.invariance_test == "tram_gcm":
+            from ..invariance_tests import TramGcmTest
+
+            inv_test = TramGcmTest(test_classifier_type=self.test_classifier_type)
         else:
             raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
 

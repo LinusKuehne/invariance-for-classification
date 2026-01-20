@@ -39,11 +39,30 @@ class TramGcmTest(InvarianceTest):
         self.name = "tram_gcm"
 
         try:
-            self.tramicp = importr("tramicp")
+            # Verify package availability (and cache it)
+            self._tramicp = importr("tramicp")
         except Exception as e:
             raise ImportError(
                 f"R package 'tramicp' not found or could not be loaded: {e}"
             ) from e
+
+    @property
+    def tramicp(self):
+        # Lazy load if not present (e.g. after unpickling)
+        if getattr(self, "_tramicp", None) is None:
+            if importr is not None:
+                self._tramicp = importr("tramicp")
+        return self._tramicp
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # Remove unpicklable R object
+        state.pop("_tramicp", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # _tramicp is left undefined/None, will be loaded by property
 
     def test(self, X: np.ndarray, y: np.ndarray, E: np.ndarray) -> float:
         """
