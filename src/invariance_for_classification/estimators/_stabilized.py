@@ -13,13 +13,13 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import check_random_state, resample
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
-from ..invariance_tests import InvarianceTest, InvariantResidualDistributionTest
+from ..invariance_tests import InvariantResidualDistributionTest
 
 logger = logging.getLogger(__name__)
 
 
 def _fit_model_helper(
-    X: np.ndarray, y: np.ndarray, base_estimator, force_n_jobs_1: bool = False
+    X: np.ndarray, y: np.ndarray, pred_classifier, force_n_jobs_1: bool = False
 ):
     """
     Helper to fit a model on a subset of features.
@@ -28,58 +28,32 @@ def _fit_model_helper(
     if X.shape[1] == 0:
         model = _EmptySetClassifier()
     else:
-        model = clone(base_estimator)
-        if force_n_jobs_1 and hasattr(model, "n_jobs"):
-            model.set_params(n_jobs=1)
+        model = clone(pred_classifier)
+        if force_n_jobs_1:
+            # Only set n_jobs if the estimator supports it
+            if "n_jobs" in model.get_params():
+                model.set_params(n_jobs=1)
 
     model.fit(X, y)
     return model
 
 
-def _get_aligned_proba(model, X: np.ndarray, use_oob: bool = True) -> np.ndarray:
-    """
-    Get probability estimates aligned to encoded labels [0, 1].
-
-    Returns an array of shape (n_samples, 2) where column 0 corresponds to the
-    encoded class 0 and column 1 corresponds to encoded class 1.
-    """
-    if use_oob and hasattr(model, "oob_decision_function_"):
-        proba = model.oob_decision_function_
-        if np.isnan(proba).any():
-            fallback = model.predict_proba(X)
-            proba = np.where(np.isnan(proba), fallback, proba)
-    else:
-        proba = model.predict_proba(X)
-
-    proba = np.asarray(proba)
-    if proba.ndim == 1:
-        proba = np.column_stack([1.0 - proba, proba])
-
-    aligned = np.zeros((proba.shape[0], 2), dtype=float)
-    classes = getattr(model, "classes_", np.array([0, 1]))
-    for i, class_label in enumerate(classes):
-        if class_label in (0, 1):
-            aligned[:, int(class_label)] = proba[:, i]
-
-    row_sums = aligned.sum(axis=1)
-    missing = row_sums == 0
-    if np.any(missing):
-        aligned[missing] = 0.5
-        row_sums[missing] = 1.0
-    aligned = aligned / row_sums[:, None]
-    return aligned
-
-
 def _compute_score_helper(
     model, X: np.ndarray, y: np.ndarray, use_oob: bool = True
 ) -> float:
-    """Compute score (negative log loss) for binary classification."""
-    # y must be 0/1 integers
-    proba = _get_aligned_proba(model, X, use_oob=use_oob)
-    return float(-log_loss(y, proba, labels=[0, 1]))
+    """Compute BCE score (negative log loss)."""
+    if use_oob and hasattr(model, "oob_decision_function_"):
+        y_pred = model.oob_decision_function_
+        if np.isnan(y_pred).any():
+            fallback = model.predict_proba(X)
+            y_pred = np.where(np.isnan(y_pred), fallback, y_pred)
+    else:
+        y_pred = model.predict_proba(X)
+
+    return float(-log_loss(y, y_pred, labels=[0, 1]))
 
 
-def _subset_worker(subset, X, y, environment, inv_test, base_estimator, alpha_inv):
+def _subset_worker(subset, X, y, environment, inv_test, pred_classifier, alpha_inv):
     """Worker function to test a subset for invariance and fit model if successful."""
     subset = list(subset)
     X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
@@ -89,44 +63,34 @@ def _subset_worker(subset, X, y, environment, inv_test, base_estimator, alpha_in
     stat = None
     if p_value >= alpha_inv:
         # fit model
-        model = clone(base_estimator)
+        model = clone(pred_classifier)
         score = None
 
         if isinstance(model, RandomForestClassifier):
             model.set_params(oob_score=True)
             model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
-            # compute predictiveness score using OOB
             score = _compute_score_helper(model, X_S, y, use_oob=True)
         else:
             # use CV for score
-            try:
-                # y is encoded 0/1, so we expect two classes
-                cv_proba = cross_val_predict(
-                    clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
-                )
-                # cv_proba is (n_samples, 2). Align with y (0/1)
-                # score is negative log loss
-                score = -log_loss(y, cv_proba, labels=[0, 1])
-            except Exception:
-                # Fallback to in-sample if CV fails
-                pass
+            cv_proba = cross_val_predict(
+                clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
+            )
+            score = float(-log_loss(y, cv_proba, labels=[0, 1]))
 
             # fit the final model on all data
             model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
-            if score is None:
-                score = _compute_score_helper(model, X_S, y, use_oob=False)
 
         stat = {
             "subset": subset,
             "p_value": p_value,
-            "score": float(score),
+            "score": score,
             "model": model,
         }
 
     return subset, p_value, stat
 
 
-def _bootstrap_worker(seed, X, y, S_max, base_estimator):
+def _bootstrap_worker(seed, X, y, S_max, pred_classifier):
     """Worker function to compute a single bootstrap score."""
     rng = np.random.RandomState(seed)
     n_samples = X.shape[0]
@@ -143,7 +107,7 @@ def _bootstrap_worker(seed, X, y, S_max, base_estimator):
     X_S_test = X_test[:, S_max] if len(S_max) > 0 else np.zeros((len(oob_indices), 0))
 
     # prepare model
-    bs_model = clone(base_estimator)
+    bs_model = clone(pred_classifier)
     if isinstance(bs_model, RandomForestClassifier):
         bs_model.set_params(oob_score=False)
 
@@ -178,7 +142,7 @@ class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X):
         proba = self.predict_proba(X)
-        return self.classes_[np.argmax(proba, axis=1)]
+        return (proba[:, 1] >= 0.5).astype(int)
 
 
 class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
@@ -189,11 +153,10 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
     trained on subsets of features that are "invariant" and "predictive"
 
     Algorithm:
-    1. iterate over all feature subsets
-    2. test each subset for invariance using `invariance_test`
-    3. for invariant subsets, measure predictive performance (binary cross-entropy)
-    4. determine a predictive cutoff using bootstrapping on the single best invariant subset
-    5. form an ensemble of all invariant subsets exceeding this predictive cutoff
+    1. iterate over all feature subsets, testing for invariance using `invariance_test`
+    2. for invariant subsets, measure predictive performance (binary cross-entropy)
+    3. determine a predictive cutoff using bootstrapping on the single best invariant subset
+    4. form an ensemble of all invariant subsets exceeding this predictive cutoff
 
     Parameters
     ----------
@@ -205,17 +168,17 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         parameter controlling the predictive score cutoff (related to the quantile
         of the bootstrap distribution of the best model's performance)
 
-    classifier_type : str, default="RF"
-        Classifier type to use for the main estimator.
+    pred_classifier_type : str, default="RF"
+        Classifier type to use for making predictions.
         "RF" for random forest, "LR" for logistic regression.
         Only used if estimator is None.
 
-    test_classifier_type : str, default="LR"
+    test_classifier_type : str, default="RF"
         Classifier type to use for the invariance test.
         "RF" for random forest, "LR" for logistic regression.
         Only used if `invariance_test` is None.
 
-    invariance_test : InvarianceTest, optional
+    invariance_test : str, default="inv_residual"
         the invariance test to use
         Defaults to InvariantResidualDistributionTest
 
@@ -233,27 +196,23 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self,
         alpha_inv: float = 0.05,
         alpha_pred: float = 0.05,
-        classifier_type: str = "RF",
-        test_classifier_type: str = "LR",
-        invariance_test: Optional[InvarianceTest] = None,
+        pred_classifier_type: str = "RF",
+        test_classifier_type: str = "RF",
+        invariance_test: str = "inv_residual",
         n_bootstrap: int = 100,
         verbose: int = 0,
         random_state: Optional[int] = None,
-        n_jobs: Optional[int] = None,
+        n_jobs: int = 10,
     ):
         self.alpha_inv = alpha_inv
         self.alpha_pred = alpha_pred
-        self.classifier_type = classifier_type
+        self.pred_classifier_type = pred_classifier_type
         self.test_classifier_type = test_classifier_type
         self.invariance_test = invariance_test
         self.n_bootstrap = n_bootstrap
         self.verbose = verbose
         self.random_state = random_state
         self.n_jobs = n_jobs
-
-    # sklearn model interface
-    def _more_tags(self):
-        return {"binary_only": True}
 
     def fit(self, X, y=None, environment=None):
         """
@@ -303,35 +262,28 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
         self.n_features_in_ = X.shape[1]
 
-        # determine base estimator and invariance test
-        if self.classifier_type == "RF":
-            base_estimator = RandomForestClassifier(
+        # determine pred_classifier and invariance test
+        if self.pred_classifier_type == "RF":
+            pred_classifier = RandomForestClassifier(
                 n_estimators=100, oob_score=True, random_state=self.random_state
             )
-        elif self.classifier_type == "LR":
-            base_estimator = LogisticRegression(random_state=self.random_state)
+        elif self.pred_classifier_type == "LR":
+            pred_classifier = LogisticRegression(random_state=self.random_state)
         else:
-            raise ValueError(f"Unknown classifier_type: {self.classifier_type}")
-
-        if self.invariance_test is not None:
-            inv_test = self.invariance_test
-        else:
-            # check if user specified a different classifier for the test
-            start_test_classifier_type = (
-                self.test_classifier_type or self.classifier_type
+            raise ValueError(
+                f"Unknown pred_classifier_type: {self.pred_classifier_type}"
             )
+
+        if self.invariance_test == "inv_residual":
             inv_test = InvariantResidualDistributionTest(
-                classifier_type=start_test_classifier_type
+                test_classifier_type=self.test_classifier_type
             )
+        else:
+            raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
 
-        # keep invariance-test estimator single-threaded to avoid nested parallelism
-        inv_estimator = getattr(inv_test, "estimator", None)
-        if inv_estimator is not None and hasattr(inv_estimator, "n_jobs"):
-            inv_estimator.set_params(n_jobs=1)
-
-        # 1. & 2.: determine invariant subsets
+        # 1. determine invariant subsets
         subset_stats, all_p_values = self._find_invariant_subsets(
-            X, y_encoded, environment, self.n_features_in_, inv_test, base_estimator
+            X, y_encoded, environment, self.n_features_in_, inv_test, pred_classifier
         )
 
         # fallback if no invariant subsets found
@@ -340,14 +292,14 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 logger.warning(
                     "No invariant subsets found. Using subset with max p-value."
                 )
-            subset_stats = self._apply_fallback(
-                X, y_encoded, all_p_values, base_estimator
+            subset_stats = self._apply_no_inv_fallback(
+                X, y_encoded, all_p_values, pred_classifier
             )
 
-        # 3. compute predictive cutoff via bootstrap
-        cutoff = self._compute_cutoff(X, y_encoded, subset_stats, base_estimator)
+        # 2. compute predictive cutoff via bootstrap
+        cutoff = self._compute_cutoff(X, y_encoded, subset_stats, pred_classifier)
 
-        # 4. filter predictive subsets (ensemble members)
+        # 3. filter predictive subsets (ensemble members)
         self.active_subsets_ = [
             stat for stat in subset_stats if stat["score"] >= cutoff
         ]
@@ -357,7 +309,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             best_model_stat = max(subset_stats, key=lambda x: x["score"])
             self.active_subsets_ = [best_model_stat]
 
-        # 5. compute weights (uniform averaging)
+        # 4. compute weights (uniform averaging)
         n_active = len(self.active_subsets_)
         for stat in self.active_subsets_:
             stat["weight"] = 1.0 / n_active
@@ -379,20 +331,20 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
             X_tilde = X[:, subset] if len(subset) > 0 else np.zeros((n_samples, 0))
 
-            proba = _get_aligned_proba(model, X_tilde, use_oob=False)
+            proba = model.predict_proba(X_tilde)
             sum_proba += weight * proba
 
         return sum_proba
 
-    def predict(self, X):
-        """predict class labels with a 0.5 threshold"""
+    def predict(self, X: np.ndarray, threshold: float = 0.5):
+        """predict class labels with a threshold (default: 0.5)"""
         check_is_fitted(self)
         X = self._validate_X(X)
         proba = self.predict_proba(X)
 
         prob_pos = proba[:, 1]
 
-        predictions_int = (prob_pos > 0.5).astype(int)
+        predictions_int = (prob_pos > threshold).astype(int)
 
         # map back to original labels
         return self.le_.inverse_transform(predictions_int)
@@ -425,10 +377,9 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
         environment = check_array(environment, ensure_2d=False, dtype=None)
 
-        unique_envs = np.unique(environment)
-        if len(unique_envs) < 2:
+        if len(np.unique(environment)) < 2:
             raise ValueError(
-                f"Validation Error: Environment variable must contain at least 2 unique values. Found {len(unique_envs)} ({unique_envs})."
+                f"Validation Error: Environment variable must contain at least 2 unique values. Found {len(np.unique(environment))} ({np.unique(environment)})."
             )
 
         return X, y, environment
@@ -444,7 +395,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         return X
 
     def _find_invariant_subsets(
-        self, X, y, environment, n_features, inv_test, base_estimator
+        self, X, y, environment, n_features, inv_test, pred_classifier
     ):
         """Iterate over all feature subsets to identify invariant ones."""
         subset_stats = []
@@ -464,7 +415,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                     y,
                     environment,
                     inv_test,
-                    base_estimator,
+                    pred_classifier,
                     self.alpha_inv,
                 )
                 for subset in feature_subsets
@@ -487,39 +438,34 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
         return subset_stats, all_p_values
 
-    def _apply_fallback(self, X, y, all_p_values, base_estimator):
+    def _apply_no_inv_fallback(self, X, y, all_p_values, pred_classifier):
         """Fallback to the subset with the highest p-value in case no invariant subsets found."""
         best_subset, max_p = max(all_p_values, key=lambda x: x[1])
         X_S = X[:, best_subset] if len(best_subset) > 0 else np.zeros((X.shape[0], 0))
 
-        model = clone(base_estimator)
+        model = clone(pred_classifier)
         score = None
         if isinstance(model, RandomForestClassifier):
             model.set_params(oob_score=True)
             model = _fit_model_helper(X_S, y, model)
             score = _compute_score_helper(model, X_S, y, use_oob=True)
         else:
-            try:
-                cv_proba = cross_val_predict(
-                    clone(model), X_S, y, cv=5, method="predict_proba"
-                )
-                score = -log_loss(y, cv_proba, labels=[0, 1])
-            except Exception:
-                pass
+            cv_proba = cross_val_predict(
+                clone(model), X_S, y, cv=5, method="predict_proba"
+            )
+            score = float(-log_loss(y, cv_proba, labels=[0, 1]))
             model = _fit_model_helper(X_S, y, model)
-            if score is None:
-                score = _compute_score_helper(model, X_S, y, use_oob=False)
 
         return [
             {
                 "subset": best_subset,
                 "p_value": max_p,
-                "score": float(score),
+                "score": score,
                 "model": model,
             }
         ]
 
-    def _compute_cutoff(self, X, y, subset_stats, base_estimator):
+    def _compute_cutoff(self, X, y, subset_stats, pred_classifier):
         """Compute the predictive cutoff score via bootstrapping the best subset."""
         if not subset_stats:
             return -np.inf
@@ -532,7 +478,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         )
 
         bootstrap_scores = Parallel(n_jobs=self.n_jobs)(
-            delayed(_bootstrap_worker)(seed, X, y, S_max, base_estimator)
+            delayed(_bootstrap_worker)(seed, X, y, S_max, pred_classifier)
             for seed in seeds
         )
 

@@ -2,22 +2,22 @@ from typing import Any
 
 import numpy as np
 import scipy.stats as stats
-from sklearn.base import clone, is_classifier
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_predict
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from ._base import InvarianceTest
 
 
 class InvariantResidualDistributionTest(InvarianceTest):
     """
-    invariant residual distribution test
+    Invariant residual distribution test
 
     Tests the null hypothesis that the residuals of a model predicting Y from X_S
     have the same mean across all envs E.
 
-    H0: mean(residuals | E=e) constant for all e
+    H_0: mean(residuals | E=e) constant for all e
 
     Algorithm:
     1. Fit a model (e.g., RF) to predict Y given X_S
@@ -26,31 +26,32 @@ class InvariantResidualDistributionTest(InvarianceTest):
 
     For RFs, OOB predictions are preferred to avoid overfitted residuals.
     For logistic regression, we use cross-validation.
+
+    Parameters
+    ----------
+    test_classifier_type : str, default="RF"
+        "RF" for random forest, "LR" for logistic regression.
     """
 
     def __init__(
         self,
-        classifier_type: str = "RF",
+        test_classifier_type: str = "RF",
     ):
-        """
-        Parameters
-        ----------
-        classifier_type : str, default="RF"
-            "RF" for random forest, "LR" for logistic regression.
-        """
-        self.classifier_type = classifier_type
-        if classifier_type == "RF":
+        self.test_classifier_type = test_classifier_type
+        if test_classifier_type == "RF":
             self.estimator = RandomForestClassifier(
                 n_estimators=100, oob_score=True, random_state=42, n_jobs=1
             )
-        elif classifier_type == "LR":
-            self.estimator = LogisticRegression(random_state=42, n_jobs=1)
+        elif test_classifier_type == "LR":
+            self.estimator = LogisticRegression(random_state=42)
         else:
-            raise ValueError(f"Unknown classifier_type: {classifier_type}")
+            raise ValueError(f"Unknown test_classifier_type: {test_classifier_type}")
+
+        self.name = "inv_residual"
 
     def test(self, X: np.ndarray, y: np.ndarray, E: np.ndarray) -> float:
         """
-        Perform invariant residual distr test.
+        Perform the invariant residual distribution test.
 
         Parameters
         ----------
@@ -66,8 +67,7 @@ class InvariantResidualDistributionTest(InvarianceTest):
         p_value : float
             p-value of one-way ANOVA test
         """
-        unique_envs = np.unique(E)
-        if len(unique_envs) < 2:
+        if len(np.unique(E)) < 2:
             # test undefined for single environment; assume invariance (cannot reject)
             return 1.0
 
@@ -75,7 +75,7 @@ class InvariantResidualDistributionTest(InvarianceTest):
         # => checking if P(Y) changes across envs
         if X.shape[1] == 0:
             mean_y = np.mean(y)
-            y_pred_proba = np.full_like(y, mean_y, dtype=float)
+            y_pred = np.full_like(y, mean_y, dtype=float)
 
         # case 2: non-empty set of predictors
         else:
@@ -89,23 +89,16 @@ class InvariantResidualDistributionTest(InvarianceTest):
 
             if use_oob:
                 est.fit(X, y)
-                y_pred_proba = self._get_predictions(est, X, use_oob)
+                y_pred = self._get_predictions(est, X, use_oob)
             else:
-                # use CV
-                try:
-                    y_pred_proba_cv = cross_val_predict(
-                        est, X, y, cv=5, method="predict_proba", n_jobs=1
-                    )
-                    # For binary classification, we want P(Y=1)
-                    y_pred_proba = y_pred_proba_cv[:, 1]
-                except Exception:
-                    # fallback to in-sample if CV fails (e.g. too small data)
-                    est.fit(X, y)
-                    y_pred_proba = self._get_predictions(est, X, use_oob=False)
+                cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+                y_pred = cross_val_predict(
+                    est, X, y, cv=cv, method="predict_proba", n_jobs=1
+                )[:, 1]
 
-        residuals = y - y_pred_proba
+        residuals = y - y_pred
 
-        groups = [residuals[E == e] for e in unique_envs]
+        groups = [residuals[E == e] for e in np.unique(E)]
 
         # stats.f_oneway handles variance checks internally to some degree
         try:
@@ -122,22 +115,10 @@ class InvariantResidualDistributionTest(InvarianceTest):
     def _get_predictions(self, est: Any, X: np.ndarray, use_oob: bool) -> np.ndarray:
         """Helper to get probability predictions (using OOB if possible)."""
         if use_oob and hasattr(est, "oob_decision_function_"):
-            if is_classifier(est):
-                classes = est.classes_
-                if 1 in classes:
-                    col_idx = np.where(classes == 1)[0][0]
-                    oob = est.oob_decision_function_[:, col_idx]
-                    if np.any(np.isnan(oob)):
-                        fallback = est.predict_proba(X)[:, col_idx]
-                        oob = np.where(np.isnan(oob), fallback, oob)
-                    return oob
-                return np.zeros(X.shape[0])
-            return est.oob_prediction_
+            oob = est.oob_decision_function_[:, 1]
+            if np.any(np.isnan(oob)):
+                fallback = est.predict_proba(X)[:, 1]
+                oob = np.where(np.isnan(oob), fallback, oob)
+            return oob
 
-        if is_classifier(est):
-            classes = est.classes_
-            if 1 in classes:
-                col_idx = np.where(classes == 1)[0][0]
-                return est.predict_proba(X)[:, col_idx]
-            return np.zeros(X.shape[0])
-        return est.predict(X)
+        return est.predict_proba(X)[:, 1]

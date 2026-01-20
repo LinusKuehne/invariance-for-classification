@@ -3,6 +3,7 @@ import inspect
 import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.validation import check_is_fitted
 
@@ -85,7 +86,7 @@ def test_invariance_test_single_env(inv_test_cls):
     """Test behavior with a single environment."""
     X = np.random.rand(50, 2)
     y = np.random.randint(0, 2, 50)
-    E = np.zeros(50)  # Single environment
+    E = np.zeros(50)  # single environment
 
     inv_test = inv_test_cls()
     p_val = inv_test.test(X, y, E)
@@ -123,7 +124,7 @@ def test_fit_stabilized_classifier(inv_test_cls):
     # Use the discovered invariance test class
     inv_test_instance = inv_test_cls()
     clf = StabilizedClassificationClassifier(
-        n_bootstrap=10, verbose=0, invariance_test=inv_test_instance
+        n_bootstrap=10, verbose=0, invariance_test=inv_test_instance.name
     )
 
     clf.fit(df, y="Y", environment="E")
@@ -169,30 +170,32 @@ def test_finds_invariant_subset(inv_test_cls):
     y = clf.le_.fit_transform(y)
     clf.classes_ = clf.le_.classes_
     n_features = X.shape[1]
-    base_estimator = RandomForestClassifier(
-        n_estimators=200, oob_score=True, random_state=42
-    )
 
-    # Instantiate the invariance test class to be tested
-    # Some tests might take an estimator, others might not
-    try:
-        inv_test = inv_test_cls(estimator=base_estimator)
-    except TypeError:
-        inv_test = inv_test_cls()
+    for pred_classifier_type in ["RF", "LR"]:
+        if pred_classifier_type == "RF":
+            pred_classifier = RandomForestClassifier(
+                n_estimators=100, oob_score=True, random_state=42, n_jobs=1
+            )
+        else:
+            pred_classifier = LogisticRegression(random_state=42)
 
-    subset_stats, _ = clf._find_invariant_subsets(
-        X, y, environment, n_features, inv_test, base_estimator
-    )
+        for test_classifier_type in ["RF", "LR"]:
+            # instantiate the invariance test class to be tested
+            inv_test = inv_test_cls(test_classifier_type=test_classifier_type)
 
-    invariant_subsets = {frozenset(s["subset"]) for s in subset_stats}
+            subset_stats, _ = clf._find_invariant_subsets(
+                X, y, environment, n_features, inv_test, pred_classifier
+            )
 
-    # {X1} is invariant; {X1,X3} should also be invariant in this SCM
-    expected = {frozenset({0}), frozenset({0, 2})}
-    missing = expected - invariant_subsets
-    assert not missing, (
-        "Expected invariant subsets {0} and {0,2}. "
-        f"Missing: {sorted([set(m) for m in missing])}. Found: {sorted([set(s) for s in invariant_subsets])}"
-    )
+            invariant_subsets = {frozenset(s["subset"]) for s in subset_stats}
+
+            # {X1} is invariant; {X1,X3} should also be invariant in this SCM
+            expected = {frozenset({0}), frozenset({0, 2})}
+            missing = expected - invariant_subsets
+            assert not missing, (
+                "Expected invariant subsets {0} and {0,2}. "
+                f"Missing: {sorted([set(m) for m in missing])}. Found: {sorted([set(s) for s in invariant_subsets])}"
+            )
 
 
 def test_predict_proba():
@@ -252,22 +255,10 @@ def test_ensemble_averaging():
 def test_no_invariant_fallback():
     """Test behavior when no invariant subsets are found (fallback mechanism)."""
 
-    class RejectAllTest(InvarianceTest):
-        """Mock test that always rejects invariance (p-value < alpha)."""
-
-        def test(self, X, y, E) -> float:
-            # Deterministically prefer non-empty subsets for fallback
-            # but keep p-value below alpha (0.05)
-            if X.shape[1] > 0:
-                return 0.01
-            return 0.0
-
     df = generate_scm_data(n_per_env=200, seed=42)
 
     # Use a test that always returns p<0.5, so nothing is "invariant"
-    clf = StabilizedClassificationClassifier(
-        invariance_test=RejectAllTest(), alpha_inv=0.05, verbose=0
-    )
+    clf = StabilizedClassificationClassifier(alpha_inv=0.99999)
 
     X = df.drop(columns=["Y", "E"]).values
     y = df["Y"].values
