@@ -18,21 +18,12 @@ from ..invariance_tests import InvariantResidualDistributionTest
 logger = logging.getLogger(__name__)
 
 
-def _fit_model_helper(
-    X: np.ndarray, y: np.ndarray, pred_classifier, force_n_jobs_1: bool = False
-):
-    """
-    Helper to fit a model on a subset of features.
-    Handles empty sets and n_jobs configuration.
-    """
+def _fit_model_helper(X: np.ndarray, y: np.ndarray, pred_classifier):
+    """Helper to fit a model on a subset of features (handles empty sets)."""
     if X.shape[1] == 0:
         model = _EmptySetClassifier()
     else:
         model = clone(pred_classifier)
-        if force_n_jobs_1:
-            # Only set n_jobs if the estimator supports it
-            if "n_jobs" in model.get_params():
-                model.set_params(n_jobs=1)
 
     model.fit(X, y)
     return model
@@ -68,7 +59,7 @@ def _subset_worker(subset, X, y, environment, inv_test, pred_classifier, alpha_i
 
         if isinstance(model, RandomForestClassifier):
             model.set_params(oob_score=True)
-            model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
+            model = _fit_model_helper(X_S, y, model)
             score = _compute_score_helper(model, X_S, y, use_oob=True)
         else:
             # use CV for score
@@ -78,7 +69,7 @@ def _subset_worker(subset, X, y, environment, inv_test, pred_classifier, alpha_i
             score = float(-log_loss(y, cv_proba, labels=[0, 1]))
 
             # fit the final model on all data
-            model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
+            model = _fit_model_helper(X_S, y, model)
 
         stat = {
             "subset": subset,
@@ -111,7 +102,7 @@ def _bootstrap_worker(seed, X, y, S_max, pred_classifier):
     if isinstance(bs_model, RandomForestClassifier):
         bs_model.set_params(oob_score=False)
 
-    bs_model = _fit_model_helper(X_S_train, y_train, bs_model, force_n_jobs_1=True)
+    bs_model = _fit_model_helper(X_S_train, y_train, bs_model)
 
     # predictiveness score (use_oob=False because we have explicit hold-out set)
     score = _compute_score_helper(bs_model, X_S_test, y_test, use_oob=False)
@@ -265,7 +256,10 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         # determine pred_classifier and invariance test
         if self.pred_classifier_type == "RF":
             pred_classifier = RandomForestClassifier(
-                n_estimators=100, oob_score=True, random_state=self.random_state
+                n_estimators=100,
+                oob_score=True,
+                random_state=self.random_state,
+                n_jobs=1,
             )
         elif self.pred_classifier_type == "LR":
             pred_classifier = LogisticRegression(random_state=self.random_state)
@@ -451,7 +445,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             score = _compute_score_helper(model, X_S, y, use_oob=True)
         else:
             cv_proba = cross_val_predict(
-                clone(model), X_S, y, cv=5, method="predict_proba"
+                clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
             )
             score = float(-log_loss(y, cv_proba, labels=[0, 1]))
             model = _fit_model_helper(X_S, y, model)
