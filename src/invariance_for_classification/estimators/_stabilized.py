@@ -71,15 +71,14 @@ def _get_aligned_proba(model, X: np.ndarray, use_oob: bool = True) -> np.ndarray
 def _compute_score_helper(
     model, X: np.ndarray, y: np.ndarray, use_oob: bool = True
 ) -> float:
-    """
-    Compute score (negative log loss) for binary classification.
-    """
+    """Compute score (negative log loss) for binary classification."""
     # y must be 0/1 integers
     proba = _get_aligned_proba(model, X, use_oob=use_oob)
     return float(-log_loss(y, proba, labels=[0, 1]))
 
 
 def _subset_worker(subset, X, y, environment, inv_test, base_estimator, alpha_inv):
+    """Worker function to test a subset for invariance and fit model if successful."""
     subset = list(subset)
     X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
 
@@ -109,6 +108,7 @@ def _subset_worker(subset, X, y, environment, inv_test, base_estimator, alpha_in
 
 
 def _bootstrap_worker(seed, X, y, S_max, base_estimator):
+    """Worker function to compute a single bootstrap score."""
     rng = np.random.RandomState(seed)
     n_samples = X.shape[0]
     indices = np.asarray(resample(np.arange(n_samples), replace=True, random_state=rng))
@@ -394,6 +394,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         return X, y, environment
 
     def _validate_X(self, X):
+        """Validate input features X against the training feature count."""
         X = check_array(X)
         if hasattr(self, "n_features_in_") and X.shape[1] != self.n_features_in_:
             raise ValueError(
@@ -405,6 +406,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
     def _find_invariant_subsets(
         self, X, y, environment, n_features, inv_test, base_estimator
     ):
+        """Iterate over all feature subsets to identify invariant ones."""
         subset_stats = []
         all_p_values = []
 
@@ -456,6 +458,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         ]
 
     def _compute_cutoff(self, X, y, subset_stats, base_estimator):
+        """Compute the predictive cutoff score via bootstrapping the best subset."""
         if not subset_stats:
             return -np.inf
 
