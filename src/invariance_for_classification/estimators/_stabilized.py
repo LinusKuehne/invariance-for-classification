@@ -6,7 +6,9 @@ import numpy as np
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
+from sklearn.model_selection import cross_val_predict
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils import check_random_state, resample
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
@@ -87,20 +89,37 @@ def _subset_worker(subset, X, y, environment, inv_test, base_estimator, alpha_in
     stat = None
     if p_value >= alpha_inv:
         # fit model
-        # here, we want oob_score=True for RF (default)
         model = clone(base_estimator)
+        score = None
+
         if isinstance(model, RandomForestClassifier):
             model.set_params(oob_score=True)
+            model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
+            # compute predictiveness score using OOB
+            score = _compute_score_helper(model, X_S, y, use_oob=True)
+        else:
+            # use CV for score
+            try:
+                # y is encoded 0/1, so we expect two classes
+                cv_proba = cross_val_predict(
+                    clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
+                )
+                # cv_proba is (n_samples, 2). Align with y (0/1)
+                # score is negative log loss
+                score = -log_loss(y, cv_proba, labels=[0, 1])
+            except Exception:
+                # Fallback to in-sample if CV fails
+                pass
 
-        model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
-
-        # compute predictiveness score
-        score = _compute_score_helper(model, X_S, y, use_oob=True)
+            # fit the final model on all data
+            model = _fit_model_helper(X_S, y, model, force_n_jobs_1=True)
+            if score is None:
+                score = _compute_score_helper(model, X_S, y, use_oob=False)
 
         stat = {
             "subset": subset,
             "p_value": p_value,
-            "score": score,
+            "score": float(score),
             "model": model,
         }
 
@@ -186,9 +205,15 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         parameter controlling the predictive score cutoff (related to the quantile
         of the bootstrap distribution of the best model's performance)
 
-    estimator : BaseEstimator, optional
-        the base classifier to use for each subset
-        Defaults to RandomForestClassifier(n_estimators=100, oob_score=True)
+    classifier_type : str, default="RF"
+        Classifier type to use for the main estimator.
+        "RF" for random forest, "LR" for logistic regression.
+        Only used if estimator is None.
+
+    test_classifier_type : str, default="LR"
+        Classifier type to use for the invariance test.
+        "RF" for random forest, "LR" for logistic regression.
+        Only used if `invariance_test` is None.
 
     invariance_test : InvarianceTest, optional
         the invariance test to use
@@ -208,7 +233,8 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self,
         alpha_inv: float = 0.05,
         alpha_pred: float = 0.05,
-        estimator: Optional[BaseEstimator] = None,
+        classifier_type: str = "RF",
+        test_classifier_type: str = "LR",
         invariance_test: Optional[InvarianceTest] = None,
         n_bootstrap: int = 100,
         verbose: int = 0,
@@ -217,7 +243,8 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
     ):
         self.alpha_inv = alpha_inv
         self.alpha_pred = alpha_pred
-        self.estimator = estimator
+        self.classifier_type = classifier_type
+        self.test_classifier_type = test_classifier_type
         self.invariance_test = invariance_test
         self.n_bootstrap = n_bootstrap
         self.verbose = verbose
@@ -277,12 +304,25 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self.n_features_in_ = X.shape[1]
 
         # determine base estimator and invariance test
-        base_estimator = self.estimator or RandomForestClassifier(
-            n_estimators=100, oob_score=True, random_state=self.random_state
-        )
-        inv_test = self.invariance_test or InvariantResidualDistributionTest(
-            estimator=base_estimator
-        )
+        if self.classifier_type == "RF":
+            base_estimator = RandomForestClassifier(
+                n_estimators=100, oob_score=True, random_state=self.random_state
+            )
+        elif self.classifier_type == "LR":
+            base_estimator = LogisticRegression(random_state=self.random_state)
+        else:
+            raise ValueError(f"Unknown classifier_type: {self.classifier_type}")
+
+        if self.invariance_test is not None:
+            inv_test = self.invariance_test
+        else:
+            # check if user specified a different classifier for the test
+            start_test_classifier_type = (
+                self.test_classifier_type or self.classifier_type
+            )
+            inv_test = InvariantResidualDistributionTest(
+                classifier_type=start_test_classifier_type
+            )
 
         # keep invariance-test estimator single-threaded to avoid nested parallelism
         inv_estimator = getattr(inv_test, "estimator", None)
@@ -451,10 +491,32 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         """Fallback to the subset with the highest p-value in case no invariant subsets found."""
         best_subset, max_p = max(all_p_values, key=lambda x: x[1])
         X_S = X[:, best_subset] if len(best_subset) > 0 else np.zeros((X.shape[0], 0))
-        model = _fit_model_helper(X_S, y, base_estimator)
-        score = _compute_score_helper(model, X_S, y, use_oob=True)
+
+        model = clone(base_estimator)
+        score = None
+        if isinstance(model, RandomForestClassifier):
+            model.set_params(oob_score=True)
+            model = _fit_model_helper(X_S, y, model)
+            score = _compute_score_helper(model, X_S, y, use_oob=True)
+        else:
+            try:
+                cv_proba = cross_val_predict(
+                    clone(model), X_S, y, cv=5, method="predict_proba"
+                )
+                score = -log_loss(y, cv_proba, labels=[0, 1])
+            except Exception:
+                pass
+            model = _fit_model_helper(X_S, y, model)
+            if score is None:
+                score = _compute_score_helper(model, X_S, y, use_oob=False)
+
         return [
-            {"subset": best_subset, "p_value": max_p, "score": score, "model": model}
+            {
+                "subset": best_subset,
+                "p_value": max_p,
+                "score": float(score),
+                "model": model,
+            }
         ]
 
     def _compute_cutoff(self, X, y, subset_stats, base_estimator):

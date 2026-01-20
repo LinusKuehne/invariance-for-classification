@@ -44,7 +44,6 @@ def test_initialization():
     clf = StabilizedClassificationClassifier(alpha_inv=0.1, n_bootstrap=50)
     assert clf.alpha_inv == 0.1
     assert clf.n_bootstrap == 50
-    assert clf.estimator is None
 
 
 def test_empty_set_classifier():

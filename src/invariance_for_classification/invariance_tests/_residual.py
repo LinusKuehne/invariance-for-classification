@@ -1,9 +1,11 @@
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import scipy.stats as stats
-from sklearn.base import BaseEstimator, clone, is_classifier
+from sklearn.base import clone, is_classifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_predict
 
 from ._base import InvarianceTest
 
@@ -22,23 +24,29 @@ class InvariantResidualDistributionTest(InvarianceTest):
     2. Compute residuals R = Y - P(Y=1|X_S)
     3. Perform one-way ANOVA on R grouped by E
 
-    For RFs, OOB predictions are preferred to avoid overfitting residuals
+    For RFs, OOB predictions are preferred to avoid overfitted residuals.
+    For logistic regression, we use cross-validation.
     """
 
-    def __init__(self, estimator: Optional[BaseEstimator] = None):
+    def __init__(
+        self,
+        classifier_type: str = "RF",
+    ):
         """
         Parameters
         ----------
-        estimator : BaseEstimator, optional
-            base estimator to use for predicting Y from X_S
-            Defaults to RandomForestClassifier(n_estimators=100, oob_score=True)
+        classifier_type : str, default="RF"
+            "RF" for random forest, "LR" for logistic regression.
         """
-        if estimator is None:
+        self.classifier_type = classifier_type
+        if classifier_type == "RF":
             self.estimator = RandomForestClassifier(
-                n_estimators=100, oob_score=True, random_state=42
+                n_estimators=100, oob_score=True, random_state=42, n_jobs=1
             )
+        elif classifier_type == "LR":
+            self.estimator = LogisticRegression(random_state=42, n_jobs=1)
         else:
-            self.estimator = estimator
+            raise ValueError(f"Unknown classifier_type: {classifier_type}")
 
     def test(self, X: np.ndarray, y: np.ndarray, E: np.ndarray) -> float:
         """
@@ -79,10 +87,21 @@ class InvariantResidualDistributionTest(InvarianceTest):
                 est.set_params(oob_score=True)
                 use_oob = True
 
-            est.fit(X, y)
-
-            # retrieve predictions (OOB preferred)
-            y_pred_proba = self._get_predictions(est, X, use_oob)
+            if use_oob:
+                est.fit(X, y)
+                y_pred_proba = self._get_predictions(est, X, use_oob)
+            else:
+                # use CV
+                try:
+                    y_pred_proba_cv = cross_val_predict(
+                        est, X, y, cv=5, method="predict_proba", n_jobs=1
+                    )
+                    # For binary classification, we want P(Y=1)
+                    y_pred_proba = y_pred_proba_cv[:, 1]
+                except Exception:
+                    # fallback to in-sample if CV fails (e.g. too small data)
+                    est.fit(X, y)
+                    y_pred_proba = self._get_predictions(est, X, use_oob=False)
 
         residuals = y - y_pred_proba
 
