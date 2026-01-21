@@ -4,11 +4,44 @@ import numpy as np
 import pandas as pd
 
 
+def _nonlinear_f(x: np.ndarray) -> np.ndarray:
+    """
+    Non-linear transformation function for the logistic_complex model.
+
+    For x < 0: returns |x|
+    For 0 <= x <= 3: polynomial with peak and trough
+    For x > 3: monotonically decreasing (inverted logarithm shape)
+
+    This creates a non-monotonic relationship between X1 and Y, making the
+    classification problem more challenging for linear models.
+    """
+    result = np.zeros_like(x, dtype=float)
+
+    # For x < 0: use |x|
+    neg_mask = x < 0
+    result[neg_mask] = np.abs(x[neg_mask])
+
+    # For 0 <= x <= 3: polynomial f(x) = x * (x - 1.5) * (x - 2.5)
+    mid_mask = (x >= 0) & (x <= 3)
+    x_mid = x[mid_mask]
+    result[mid_mask] = x_mid * (x_mid - 1.5) * (x_mid - 2.5)
+
+    # For x > 3: monotonically decreasing
+    high_mask = x > 3
+    x_high = x[high_mask]
+    f_at_transition = 3 * (3 - 1.5) * (3 - 2.5)
+    k = 4.0
+    result[high_mask] = f_at_transition - np.log(1 + k * (x_high - 3))
+
+    return result
+
+
 def _simple_scm_one_env(
     n: int,
     int_val: float,
     env_idx: int,
     rng: np.random.Generator,
+    model: Literal["logistic_linear", "logistic_complex"] = "logistic_linear",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     generates a sample from the simple SCM for a single environment.
@@ -27,6 +60,11 @@ def _simple_scm_one_env(
         index of the environment
     rng : np.random.Generator
         random number generator
+    model : {"logistic_linear", "logistic_complex"}, default="logistic_linear"
+        Model type for generating Y.
+        - "logistic_linear": Y depends linearly on X1 via logistic link
+        - "logistic_complex": Y depends non-monotonically on X1 via a
+          polynomial transformation
 
     Returns
     -------
@@ -48,7 +86,17 @@ def _simple_scm_one_env(
 
     noise = rng.logistic(size=n)
     input_val = beta * X1
-    Y = (noise < input_val).astype(int)
+
+    # Generate Y based on model type
+    if model == "logistic_linear":
+        Y = (noise < input_val).astype(int)
+    elif model == "logistic_complex":
+        fx = _nonlinear_f(input_val)
+        Y = (noise < fx).astype(int)
+    else:
+        raise ValueError(
+            f"Invalid model: {model}. Choose 'logistic_linear' or 'logistic_complex'."
+        )
 
     X2 = Y + gamma * int_vals + rng.normal(size=n)
     X3 = Y + rng.normal(size=n)
@@ -64,6 +112,7 @@ def generate_scm_data(
     int_vals: Optional[list[float]] = None,
     seed: Optional[int] = 42,
     *,
+    model: Literal["logistic_linear", "logistic_complex"] = "logistic_linear",
     return_int_values: Literal[False] = False,
 ) -> pd.DataFrame: ...
 
@@ -74,6 +123,7 @@ def generate_scm_data(
     int_vals: Optional[list[float]] = None,
     seed: Optional[int] = 42,
     *,
+    model: Literal["logistic_linear", "logistic_complex"] = "logistic_linear",
     return_int_values: Literal[True],
 ) -> tuple[pd.DataFrame, pd.DataFrame]: ...
 
@@ -83,6 +133,7 @@ def generate_scm_data(
     int_vals: Optional[list[float]] = None,
     seed: Optional[int] = 42,
     *,
+    model: Literal["logistic_linear", "logistic_complex"] = "logistic_linear",
     return_int_values: bool = False,
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -96,7 +147,11 @@ def generate_scm_data(
         list of intervention values (one per environment)
     seed : int, optional
         random seed for reproducibility
-
+    model : {"logistic_linear", "logistic_complex"}, default="logistic_linear"
+        Model type for generating Y.
+        - "logistic_linear": Y depends linearly on X1 via logistic link
+        - "logistic_complex": Y depends non-monotonically on X1 via a
+          polynomial transformation
     return_int_values : bool, default=False
         If True, also return a second DataFrame with a single column
         ``int_value`` holding the intervention values used to generate each row.
@@ -119,7 +174,9 @@ def generate_scm_data(
     all_data = []
     all_int = []
     for env_idx, int_val in enumerate(int_vals):
-        env_data, env_int = _simple_scm_one_env(n_per_env, int_val, env_idx, rng)
+        env_data, env_int = _simple_scm_one_env(
+            n_per_env, int_val, env_idx, rng, model=model
+        )
         all_data.append(env_data)
         all_int.append(env_int)
 
