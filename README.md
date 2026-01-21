@@ -1,5 +1,7 @@
 # invariance-for-classification
 
+![Build Status](https://github.com/LinusKuehne/invariance-for-classification/actions/workflows/tests.yml/badge.svg)
+
 First, clone the repo:
 ```bash
 git clone https://github.com/LinusKuehne/invariance-for-classification.git
