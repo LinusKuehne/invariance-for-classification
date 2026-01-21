@@ -1,8 +1,9 @@
 from .estimators import StabilizedClassificationClassifier
-from .invariance_tests import InvariantResidualDistributionTest, TramGcmTest
+from .invariance_tests import DeLongTest, InvariantResidualDistributionTest, TramGcmTest
 
 __all__ = [
+    "DeLongTest",
     "InvariantResidualDistributionTest",
-    "TramGcmTest",
     "StabilizedClassificationClassifier",
+    "TramGcmTest",
 ]

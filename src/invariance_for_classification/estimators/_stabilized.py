@@ -273,6 +273,10 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             from ..invariance_tests import TramGcmTest
 
             inv_test = TramGcmTest(test_classifier_type=self.test_classifier_type)
+        elif self.invariance_test == "delong":
+            from ..invariance_tests import DeLongTest
+
+            inv_test = DeLongTest(test_classifier_type=self.test_classifier_type)
         else:
             raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
 

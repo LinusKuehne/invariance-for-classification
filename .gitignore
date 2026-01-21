@@ -211,3 +211,4 @@ settings.json
 *.tex
 *.pdf
 dev_scripts/
+.DS_Store

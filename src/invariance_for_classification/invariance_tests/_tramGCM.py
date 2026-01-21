@@ -190,4 +190,7 @@ class TramGcmTest(InvarianceTest):
 
         p_value = stats.chi2.sf(test_stat, df=dE)
 
+        if np.isnan(p_value):
+            return 1.0
+
         return float(p_value)
