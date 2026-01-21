@@ -185,7 +185,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         pred_classifier_type: str = "RF",
         test_classifier_type: str = "RF",
         invariance_test: str = "inv_residual",
-        n_bootstrap: int = 100,
+        n_bootstrap: int = 250,
         verbose: int = 0,
         random_state: Optional[int] = None,
         n_jobs: int = 10,
