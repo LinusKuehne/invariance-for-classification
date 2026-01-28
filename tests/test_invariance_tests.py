@@ -22,9 +22,9 @@ from invariance_for_classification.invariance_tests import InvarianceTest
 
 # --- Configuration ---
 # Set to a list of test names to limit which tests run.
-# Available names: "inv_residual", "delong", "tram_gcm"
+# Available names: "inv_residual", "delong", "tram_gcm", "wgcm"
 # Empty list means all tests will run.
-ENABLED_TESTS: list[str] = ["inv_residual"]
+ENABLED_TESTS: list[str] = ["wgcm"]
 
 
 def get_invariance_test_classes():
