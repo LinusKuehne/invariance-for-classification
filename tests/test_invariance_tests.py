@@ -22,9 +22,9 @@ from invariance_for_classification.invariance_tests import InvarianceTest
 
 # --- Configuration ---
 # Set to a list of test names to limit which tests run.
-# Available names: "inv_residual", "delong", "tram_gcm", "wgcm"
+# Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "vrex"
 # Empty list means all tests will run.
-ENABLED_TESTS: list[str] = ["wgcm"]
+ENABLED_TESTS: list[str] = ["vrex"]
 
 
 def get_invariance_test_classes():
@@ -225,7 +225,7 @@ class TestFindsInvariantSubsets:
 
         # {X1} (index 0) is invariant; {X1,X3} should also be invariant in this SCM
         # Note: DeLong test is an indirect test that may not have valid level
-        # in all situations, so we only require {0} for it
+        # in all situations, so we only require {0} for it.
         if inv_test.name == "delong":
             expected = {frozenset({0})}
         else:

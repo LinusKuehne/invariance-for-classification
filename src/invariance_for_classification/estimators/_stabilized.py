@@ -281,6 +281,10 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             from ..invariance_tests import DeLongTest
 
             inv_test = DeLongTest(test_classifier_type=self.test_classifier_type)
+        elif self.invariance_test == "vrex":
+            from ..invariance_tests import VRExTest
+
+            inv_test = VRExTest(test_classifier_type=self.test_classifier_type)
         else:
             raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
 
