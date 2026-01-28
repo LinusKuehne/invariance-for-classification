@@ -24,6 +24,16 @@ class InvariantResidualDistributionTest(InvarianceTest):
     2. Compute residuals R = Y - P(Y=1|X_S)
     3. Perform one-way ANOVA on R grouped by E
 
+    Note on testing only equal means (not variances or full independence):
+    For binary classification with covariate shift (different X distributions
+    across environments), testing only the mean of residuals is appropriate.
+    The variance of binary residuals is p(1-p), which varies with X. When X's
+    distribution differs across environments, the marginal variance Var(R|E)
+    will differ even under invariance. Tests for equal variances (Levene) or
+    full independence (HSIC) would incorrectly reject invariant subsets.
+    The invariance hypothesis is E[Y|X_S, E] = E[Y|X_S], which implies
+    E[R|E] = 0 for all E, but does NOT imply equal marginal variances.
+
     For RFs, OOB predictions are preferred to avoid overfitted residuals.
     For logistic regression, we use cross-validation.
 
