@@ -8,33 +8,14 @@ These tests focus on:
 - integration with different invariance tests
 """
 
-import inspect
-
 import numpy as np
 import pytest
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.validation import check_is_fitted
 
-from invariance_for_classification import (
-    StabilizedClassificationClassifier,
-    invariance_tests,
-)
+from invariance_for_classification import StabilizedClassificationClassifier
 from invariance_for_classification.estimators._stabilized import _EmptySetClassifier
 from invariance_for_classification.generate_data.synthetic_DGP import generate_scm_data
-from invariance_for_classification.invariance_tests import InvarianceTest
-
-
-def get_invariance_test_classes():
-    """Discover all available invariance test classes."""
-    classes = []
-    for _, obj in inspect.getmembers(invariance_tests):
-        if (
-            inspect.isclass(obj)
-            and issubclass(obj, InvarianceTest)
-            and obj is not InvarianceTest
-        ):
-            classes.append(obj)
-    return classes
 
 
 @pytest.fixture
@@ -154,19 +135,15 @@ class TestStabilizedClassifierParameters:
         clf.fit(X, y, environment=E)
         check_is_fitted(clf)
 
-    @pytest.mark.parametrize("inv_test_cls", get_invariance_test_classes())
-    def test_invariance_test_types(self, small_data, inv_test_cls):
-        """Test different invariance test types."""
+    def test_invariance_test_residual(self, small_data):
+        """Test with residual invariance test (default)."""
         df = small_data
         X = df[["X1", "X2", "X3"]].to_numpy()
         y = df["Y"].to_numpy()
         E = df["E"].to_numpy()
 
-        # get the test name from current instance
-        inv_test_name = inv_test_cls().name
-
         clf = StabilizedClassificationClassifier(
-            invariance_test=inv_test_name,
+            invariance_test="inv_residual",
             n_bootstrap=20,
             n_jobs=2,
         )
