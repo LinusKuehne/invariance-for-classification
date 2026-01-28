@@ -22,9 +22,9 @@ from invariance_for_classification.invariance_tests import InvarianceTest
 
 # --- Configuration ---
 # Set to a list of test names to limit which tests run.
-# Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "vrex"
+# Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "vrex", "inv_env_pred"
 # Empty list means all tests will run.
-ENABLED_TESTS: list[str] = ["vrex"]
+ENABLED_TESTS: list[str] = ["inv_env_pred"]
 
 
 def get_invariance_test_classes():
@@ -90,7 +90,10 @@ class TestInvarianceTests:
     def test_p_value_bounds(self, synthetic_data, inv_test_cls, clf_type):
         """P-values should be in [0, 1]."""
         X, y, E = synthetic_data
-        test = inv_test_cls(test_classifier_type=clf_type)
+        try:
+            test = inv_test_cls(test_classifier_type=clf_type)
+        except NotImplementedError:
+            pytest.skip(f"{inv_test_cls.__name__} does not support {clf_type}")
         p_val = test.test(X, y, E)
         assert 0 <= p_val <= 1
 
@@ -126,7 +129,10 @@ class TestInvarianceTests:
     def test_deterministic_with_seed(self, synthetic_data, inv_test_cls, clf_type):
         """Results should be reproducible with same random state."""
         X, y, E = synthetic_data
-        test = inv_test_cls(test_classifier_type=clf_type)
+        try:
+            test = inv_test_cls(test_classifier_type=clf_type)
+        except NotImplementedError:
+            pytest.skip(f"{inv_test_cls.__name__} does not support {clf_type}")
         p1 = test.test(X, y, E)
         p2 = test.test(X, y, E)
         assert p1 == p2
@@ -215,7 +221,12 @@ class TestFindsInvariantSubsets:
             pred_classifier = LogisticRegression(random_state=42)
 
         # Instantiate the invariance test
-        inv_test = inv_test_cls(test_classifier_type=test_classifier_type)
+        try:
+            inv_test = inv_test_cls(test_classifier_type=test_classifier_type)
+        except NotImplementedError:
+            pytest.skip(
+                f"{inv_test_cls.__name__} does not support {test_classifier_type}"
+            )
 
         subset_stats, _ = clf._find_invariant_subsets(
             X, y, environment, n_features, inv_test, pred_classifier

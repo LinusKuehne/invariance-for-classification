@@ -285,6 +285,12 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             from ..invariance_tests import VRExTest
 
             inv_test = VRExTest(test_classifier_type=self.test_classifier_type)
+        elif self.invariance_test == "inv_env_pred":
+            from ..invariance_tests import InvariantEnvironmentPredictionTest
+
+            inv_test = InvariantEnvironmentPredictionTest(
+                test_classifier_type=self.test_classifier_type
+            )
         else:
             raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
 
