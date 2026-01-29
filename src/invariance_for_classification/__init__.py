@@ -1,5 +1,6 @@
 from .estimators import StabilizedClassificationClassifier
 from .invariance_tests import (
+    ConditionalRandomizationTest,
     DeLongTest,
     InvariantEnvironmentPredictionTest,
     InvariantResidualDistributionTest,
@@ -9,6 +10,7 @@ from .invariance_tests import (
 )
 
 __all__ = [
+    "ConditionalRandomizationTest",
     "DeLongTest",
     "InvariantEnvironmentPredictionTest",
     "InvariantResidualDistributionTest",

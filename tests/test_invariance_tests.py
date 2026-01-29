@@ -22,7 +22,7 @@ from invariance_for_classification.invariance_tests import InvarianceTest
 
 # --- Configuration ---
 # Set to a list of test names to limit which tests run.
-# Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "vrex", "inv_env_pred"
+# Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "vrex", "inv_env_pred", "crt"
 # Empty list means all tests will run.
 ENABLED_TESTS: list[str] = ["inv_residual"]
 

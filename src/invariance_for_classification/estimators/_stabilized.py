@@ -291,6 +291,12 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             inv_test = InvariantEnvironmentPredictionTest(
                 test_classifier_type=self.test_classifier_type
             )
+        elif self.invariance_test == "crt":
+            from ..invariance_tests import ConditionalRandomizationTest
+
+            inv_test = ConditionalRandomizationTest(
+                test_classifier_type=self.test_classifier_type
+            )
         else:
             raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
 

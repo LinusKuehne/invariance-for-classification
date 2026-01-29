@@ -82,6 +82,7 @@ class TramGcmTest(InvarianceTest):
                     min_samples_leaf=5,
                     random_state=42,
                     bootstrap=True,
+                    n_jobs=1,
                 )
                 reg.fit(X, y)
                 y_hat = reg.predict(X)
@@ -139,6 +140,7 @@ class TramGcmTest(InvarianceTest):
                     max_features=mtry,
                     min_samples_leaf=5,
                     random_state=42,
+                    n_jobs=1,
                 )
                 rf_e.fit(X, e_col)
                 e_pred = rf_e.predict(X)
