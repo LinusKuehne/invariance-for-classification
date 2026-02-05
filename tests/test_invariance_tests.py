@@ -24,11 +24,16 @@ from invariance_for_classification.invariance_tests import InvarianceTest
 # Set to a list of test names to limit which tests run.
 # Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "vrex", "inv_env_pred", "crt"
 # Empty list means all tests will run.
-ENABLED_TESTS: list[str] = ["inv_residual"]
+ENABLED_TESTS: list[str] = ["wgcm"]
 
 
 def get_invariance_test_classes():
-    """Discover all available invariance test classes."""
+    """Discover all available invariance test classes.
+
+    For WGCMTest, returns separate factories for 'est' and 'fix' methods.
+    """
+    from invariance_for_classification.invariance_tests import WGCMTest
+
     classes = []
     for _, obj in inspect.getmembers(invariance_tests):
         if (
@@ -40,8 +45,39 @@ def get_invariance_test_classes():
             instance = obj()
             name = getattr(instance, "name", "")
             if not ENABLED_TESTS or name in ENABLED_TESTS:
-                classes.append(obj)
+                # For WGCMTest, add both 'est' and 'fix' variants
+                if obj is WGCMTest:
+                    classes.append(WGCMEstFactory)
+                    classes.append(WGCMFixFactory)
+                else:
+                    classes.append(obj)
     return classes
+
+
+class WGCMEstFactory:
+    """Factory for WGCMTest with method='est'."""
+
+    def __new__(cls, **kwargs):
+        from invariance_for_classification.invariance_tests import WGCMTest
+
+        return WGCMTest(method="est", **kwargs)
+
+    @classmethod
+    def __name__(cls):
+        return "WGCMTest(method='est')"
+
+
+class WGCMFixFactory:
+    """Factory for WGCMTest with method='fix'."""
+
+    def __new__(cls, **kwargs):
+        from invariance_for_classification.invariance_tests import WGCMTest
+
+        return WGCMTest(method="fix", **kwargs)
+
+    @classmethod
+    def __name__(cls):
+        return "WGCMTest(method='fix')"
 
 
 # --- Test fixtures ---

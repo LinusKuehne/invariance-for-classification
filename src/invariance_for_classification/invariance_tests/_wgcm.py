@@ -10,7 +10,7 @@ Cyrill Scheidegger, Julia Hoerrmann, Peter Buehlmann:
 http://jmlr.org/papers/v23/21-1328.html
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -29,16 +29,30 @@ class WGCMTest(InvarianceTest):
 
     H0: E ⊥ Y | X_S  (which implies invariance of Y|X_S across environments)
 
-    The test:
-    1. Splits data into train/test sets
-    2. Estimates residuals eps = E - E[E|X_S] and xi = Y - E[Y|X_S]
-    3. Estimates a weight function W = sign(E[eps*xi|X_S]) on training data
-    4. Computes test statistic on test data using the estimated weights
+    Two methods are available:
+    - "est" (default): Estimates the weight function from a training split of the data.
+      Uses a one-sided test since the estimated weights aim for a positive test statistic.
+    - "fix": Uses fixed weight functions based on sign functions at quantiles of Z.
+      Uses a two-sided test (max of absolute values).
 
     Parameters
     ----------
+    method : {"est", "fix"}, default="est"
+        Method to use for weight functions:
+        - "est": Estimate weight function from data (sample splitting)
+        - "fix": Use fixed weight functions based on sign at quantiles
     beta : float, default=0.3
         Fraction of data used for estimating the weight function (training).
+        Only used when method="est".
+    weight_num : int, default=7
+        Number of weight functions per dimension of Z to use additionally to
+        the constant weight function w(z) = 1. The total number of weight
+        functions will be 1 + weight_num * d_Z. Only used when method="fix".
+    weight_meth : str, default="sign"
+        Method to choose weight functions. Currently only "sign" is supported.
+        Only used when method="fix".
+    nsim : int, default=499
+        Number of simulations for computing the p-value.
     max_nrounds : int, default=500
         Maximum number of boosting rounds for xgboost.
     eta : list of float, default=[0.1, 0.2, 0.3, 0.5]
@@ -61,7 +75,11 @@ class WGCMTest(InvarianceTest):
 
     def __init__(
         self,
+        method: Literal["est", "fix"] = "est",
         beta: float = 0.3,
+        weight_num: int = 7,
+        weight_meth: str = "sign",
+        nsim: int = 499,
         max_nrounds: int = 500,
         eta: Optional[list] = None,
         max_depth: Optional[list] = None,
@@ -71,6 +89,12 @@ class WGCMTest(InvarianceTest):
         test_classifier_type: Optional[str] = None,
         random_state: Optional[int] = None,
     ):
+        # Validate method
+        if method not in ("est", "fix"):
+            raise ValueError(
+                f"Unknown method: {method}. Valid options are: 'est', 'fix'"
+            )
+
         # Validate test_classifier_type for compatibility with other tests
         # WGCMTest only uses xgboost internally, but we accept RF/LR for API compatibility
         valid_types = [None, "RF", "LR", "xgb"]
@@ -80,7 +104,18 @@ class WGCMTest(InvarianceTest):
                 f"Valid options are: {valid_types}"
             )
 
+        # Validate weight_meth
+        if weight_meth != "sign":
+            raise ValueError(
+                f"Unknown weight_meth: {weight_meth}. "
+                "Only 'sign' is currently supported."
+            )
+
+        self.method = method
         self.beta = beta
+        self.weight_num = weight_num
+        self.weight_meth = weight_meth
+        self.nsim = nsim
         self.max_nrounds = max_nrounds
         self.eta = eta if eta is not None else [0.1, 0.2, 0.3, 0.5]
         self.max_depth = max_depth if max_depth is not None else [1, 2, 3, 4, 5, 6, 7]
@@ -127,12 +162,19 @@ class WGCMTest(InvarianceTest):
         if X.shape[0] == 1 and X.shape[1] != n:
             X = X.T
 
-        # Check if E and Y are both 1D (original wgcm.est case)
-        if E_numeric.ndim == 1 and y.ndim == 1:
-            return self._wgcm_est_1d(E_numeric, y, X)
+        # Dispatch based on method
+        if self.method == "fix":
+            # wgcm.fix: fixed weight functions
+            if E_numeric.ndim == 1 and y.ndim == 1:
+                return self._wgcm_fix_1d(E_numeric, y, X)
+            else:
+                return self._wgcm_fix_mult(E_numeric, y, X)
         else:
-            # Multivariate case
-            return self._wgcm_est_mult(E_numeric, y, X)
+            # wgcm.est: estimated weight function
+            if E_numeric.ndim == 1 and y.ndim == 1:
+                return self._wgcm_est_1d(E_numeric, y, X)
+            else:
+                return self._wgcm_est_mult(E_numeric, y, X)
 
     def _encode_environment(self, E: np.ndarray) -> np.ndarray:
         """Convert environment labels to numeric values."""
@@ -508,5 +550,177 @@ class WGCMTest(InvarianceTest):
 
         # One-sided p-value (expected positive under alternative)
         p_value = 1 - stats.norm.cdf(T_stat)
+
+        return float(p_value)
+
+    # =========================================================================
+    # wgcm.fix methods (fixed weight functions)
+    # =========================================================================
+
+    def _weight_matrix(self, Z: np.ndarray) -> np.ndarray:
+        """
+        Compute weight matrix using fixed weight functions.
+
+        For each dimension of Z, creates weight_num weight functions of the form
+        sign(z - quantile(z, prob)) where prob = k / (weight_num + 1) for k = 1, ..., weight_num.
+
+        Parameters
+        ----------
+        Z : np.ndarray of shape (n, d_Z)
+            Conditioning variables.
+
+        Returns
+        -------
+        W : np.ndarray of shape (n, 1 + weight_num * d_Z)
+            Weight matrix. First column is all ones (constant weight).
+        """
+        n = Z.shape[0]
+        d_Z = Z.shape[1]
+
+        # Start with constant weight function (column of ones)
+        W = np.ones((n, 1))
+
+        if self.weight_num >= 1:
+            # Quantile probabilities: 1/(weight_num+1), 2/(weight_num+1), ..., weight_num/(weight_num+1)
+            probs = np.arange(1, self.weight_num + 1) / (self.weight_num + 1)
+
+            for i in range(d_Z):
+                Z_i = Z[:, i]
+                # Compute quantiles
+                a_vec = np.quantile(Z_i, probs)
+                # Weight functions: sign(Z_i - a) for each quantile a
+                # Result is n x weight_num matrix
+                W_i = np.sign(Z_i[:, np.newaxis] - a_vec[np.newaxis, :])
+                W = np.hstack([W, W_i])
+
+        return W
+
+    def _wgcm_fix_1d(self, E: np.ndarray, y: np.ndarray, Z: np.ndarray) -> float:
+        """
+        WGCM test with fixed weight functions for 1D E and Y.
+
+        Parameters
+        ----------
+        E : np.ndarray of shape (n,)
+            Environment indicator (numeric).
+        y : np.ndarray of shape (n,)
+            Target variable.
+        Z : np.ndarray of shape (n, d)
+            Conditioning variables.
+
+        Returns
+        -------
+        p_value : float
+            Two-sided p-value.
+        """
+        n = len(y)
+        rng = np.random.default_rng(self.random_state)
+
+        # Get residuals (both E and Y are categorical)
+        eps = self._get_residuals(E, Z, is_categorical=True)
+        xi = self._get_residuals(y, Z, is_categorical=True)
+
+        if self.weight_num == 0:
+            # Simple case: no weight functions, just test correlation
+            R = eps * xi
+            var_R = np.mean(R**2) - np.mean(R) ** 2
+            if var_R <= 0:
+                return 1.0
+            T_stat = np.sqrt(n) * np.mean(R) / np.sqrt(var_R)
+            p_value = 2 * stats.norm.cdf(-np.abs(T_stat))
+            return float(p_value)
+        else:
+            # Compute weight matrix
+            W = self._weight_matrix(Z)  # shape (n, 1 + weight_num * d_Z)
+
+            # R[i, j] = eps[i] * xi[i] * W[i, j]
+            R = (eps * xi)[:, np.newaxis] * W  # shape (n, num_weights)
+            R = R.T  # shape (num_weights, n)
+
+            # Normalize each row
+            R_var = np.mean(R**2, axis=1) - np.mean(R, axis=1) ** 2
+            R_var = np.maximum(R_var, 1e-10)  # Avoid division by zero
+            R_norm = R / np.sqrt(R_var)[:, np.newaxis]
+
+            # Test statistic: max over all weight functions of absolute normalized mean
+            T_stat = np.sqrt(n) * np.max(np.abs(np.mean(R_norm, axis=1)))
+
+            # Simulate null distribution
+            sim_matrix = rng.standard_normal((n, self.nsim))
+            T_stat_sim = np.max(np.abs(R_norm @ sim_matrix), axis=0) / np.sqrt(n)
+
+            p_value = (np.sum(T_stat_sim >= T_stat) + 1) / (self.nsim + 1)
+
+            return float(p_value)
+
+    def _wgcm_fix_mult(self, E: np.ndarray, y: np.ndarray, Z: np.ndarray) -> float:
+        """
+        WGCM test with fixed weight functions for multivariate case.
+
+        Parameters
+        ----------
+        E : np.ndarray
+            Environment indicator (may be 1D or 2D).
+        y : np.ndarray
+            Target variable (may be 1D or 2D).
+        Z : np.ndarray of shape (n, d)
+            Conditioning variables.
+
+        Returns
+        -------
+        p_value : float
+            Two-sided p-value.
+        """
+        # Ensure 2D
+        if E.ndim == 1:
+            E = E.reshape(-1, 1)
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+
+        n = E.shape[0]
+        d_E = E.shape[1]
+        d_y = y.shape[1]
+
+        rng = np.random.default_rng(self.random_state)
+
+        # Compute residuals for each dimension (E and Y are categorical)
+        eps_mat = np.column_stack(
+            [self._get_residuals(E[:, j], Z, is_categorical=True) for j in range(d_E)]
+        )
+        xi_mat = np.column_stack(
+            [
+                self._get_residuals(y[:, col_idx], Z, is_categorical=True)
+                for col_idx in range(d_y)
+            ]
+        )
+
+        # Compute weight matrix
+        W = self._weight_matrix(Z)  # shape (n, num_weights)
+
+        # Build R matrix: for each combination of (j, l), multiply eps_j * xi_l * W
+        R_list = []
+        for j in range(d_E):
+            for col_idx in range(d_y):
+                R_jl = eps_mat[:, j] * xi_mat[:, col_idx]
+                # Multiply by each weight function
+                R_weighted = R_jl[:, np.newaxis] * W  # shape (n, num_weights)
+                for w_idx in range(W.shape[1]):
+                    R_list.append(R_weighted[:, w_idx])
+
+        R = np.array(R_list)  # shape (d_E * d_y * num_weights, n)
+
+        # Normalize
+        R_var = np.mean(R**2, axis=1) - np.mean(R, axis=1) ** 2
+        R_var = np.maximum(R_var, 1e-10)  # Avoid division by zero
+        R_norm = R / np.sqrt(R_var)[:, np.newaxis]
+
+        # Two-sided test (max of absolute values)
+        T_stat = np.sqrt(n) * np.max(np.abs(np.mean(R_norm, axis=1)))
+
+        # Simulate null distribution
+        sim_matrix = rng.standard_normal((n, self.nsim))
+        T_stat_sim = np.max(np.abs(R_norm @ sim_matrix), axis=0) / np.sqrt(n)
+
+        p_value = (np.sum(T_stat_sim >= T_stat) + 1) / (self.nsim + 1)
 
         return float(p_value)
