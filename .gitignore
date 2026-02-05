@@ -212,3 +212,5 @@ settings.json
 *.pdf
 dev_scripts/
 .DS_Store
+.credentials
+data/
