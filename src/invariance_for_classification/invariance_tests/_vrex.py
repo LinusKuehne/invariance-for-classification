@@ -20,7 +20,8 @@ from typing import Optional
 
 import numpy as np
 from scipy import stats
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.model_selection import KFold
 
 from ._base import InvarianceTest
 
@@ -69,13 +70,17 @@ class VRExTest(InvarianceTest):
     Parameters
     ----------
     test_classifier_type : str or None, default=None
-        Accepted for API compatibility with other tests. Valid options are
-        None, "RF", or "LR". Internally, VRExTest always uses Random Forest.
+        Classifier type to use. Valid options are None, "RF", "HGBT", or "LR".
+        "RF" uses Random Forest with OOB predictions.
+        "HGBT" uses Histogram Gradient Boosting with cross-validation.
+        "LR" defaults to "RF" for compatibility.
     n_estimators : int, default=100
-        Number of trees in the random forest.
+        Number of trees in the random forest (only used for RF).
     use_anova : bool, default=False
         If True, use one-way ANOVA instead of Kruskal-Wallis test.
         Kruskal-Wallis is the default as it's non-parametric.
+    n_folds : int, default=5
+        Number of folds for cross-validation (only used for HGBT).
     random_state : int or None, default=42
         Random seed for reproducibility.
     """
@@ -85,22 +90,27 @@ class VRExTest(InvarianceTest):
         test_classifier_type: Optional[str] = None,
         n_estimators: int = 100,
         use_anova: bool = False,
+        n_folds: int = 5,
         random_state: Optional[int] = 42,
     ):
-        # Validate test_classifier_type for API compatibility with other tests
-        # VRExTest only uses Random Forest internally
-        valid_types = [None, "RF", "LR"]
+        # Validate test_classifier_type
+        valid_types = [None, "RF", "LR", "HGBT"]
         if test_classifier_type not in valid_types:
             raise ValueError(
                 f"Unknown test_classifier_type: {test_classifier_type}. "
                 f"Valid options are: {valid_types}"
             )
 
+        # LR defaults to RF for this test
+        if test_classifier_type == "LR":
+            test_classifier_type = "RF"
+
         self.test_classifier_type = (
-            test_classifier_type  # stored but not used (RF only)
+            test_classifier_type if test_classifier_type else "RF"
         )
         self.n_estimators = n_estimators
         self.use_anova = use_anova
+        self.n_folds = n_folds
         self.random_state = random_state
         self.name = "vrex"
 
@@ -171,7 +181,7 @@ class VRExTest(InvarianceTest):
     def _get_global_predictions(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         """
         Get out-of-sample predictions from global model trained on all data.
-        Uses OOB predictions from Random Forest.
+        Uses OOB predictions for RF, cross-validation for HGBT.
         """
         n = len(y)
 
@@ -180,6 +190,10 @@ class VRExTest(InvarianceTest):
             mean_y = np.mean(y)
             return np.full(n, mean_y)
 
+        if self.test_classifier_type == "HGBT":
+            return self._get_cv_predictions_hgbt(X, y)
+
+        # Default: RF with OOB
         estimator = RandomForestClassifier(
             n_estimators=self.n_estimators,
             oob_score=True,
@@ -195,14 +209,28 @@ class VRExTest(InvarianceTest):
             preds = np.where(np.isnan(preds), fallback, preds)
         return preds
 
+    def _get_cv_predictions_hgbt(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Get cross-validated predictions using HGBT."""
+        n = len(y)
+        preds = np.zeros(n)
+
+        kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.random_state)
+
+        for train_idx, test_idx in kf.split(X):
+            estimator = HistGradientBoostingClassifier(random_state=self.random_state)
+            estimator.fit(X[train_idx], y[train_idx])
+            preds[test_idx] = estimator.predict_proba(X[test_idx])[:, 1]
+
+        return preds
+
     def _get_env_specific_predictions(
         self, X: np.ndarray, y: np.ndarray, E: np.ndarray, unique_envs: np.ndarray
     ) -> np.ndarray:
         """
         Get out-of-sample predictions from environment-specific models.
 
-        For each environment e, train a Random Forest only on data from that
-        environment and get OOB predictions for observations in that environment.
+        For each environment e, train a model only on data from that
+        environment and get out-of-sample predictions.
         """
         n = len(y)
         preds = np.zeros(n)
@@ -230,18 +258,24 @@ class VRExTest(InvarianceTest):
                 preds[mask] = np.mean(y_e)
                 continue
 
-            estimator = RandomForestClassifier(
-                n_estimators=self.n_estimators,
-                oob_score=True,
-                random_state=self.random_state,
-                n_jobs=1,
-            )
-            estimator.fit(X_e, y_e)
+            if self.test_classifier_type == "HGBT":
+                # Use cross-validation within environment for HGBT
+                env_preds = self._get_cv_predictions_hgbt(X_e, y_e)
+            else:
+                # RF with OOB
+                estimator = RandomForestClassifier(
+                    n_estimators=self.n_estimators,
+                    oob_score=True,
+                    random_state=self.random_state,
+                    n_jobs=1,
+                )
+                estimator.fit(X_e, y_e)
 
-            env_preds = estimator.oob_decision_function_[:, 1]
-            if np.any(np.isnan(env_preds)):
-                fallback = estimator.predict_proba(X_e)[:, 1]
-                env_preds = np.where(np.isnan(env_preds), fallback, env_preds)
+                env_preds = estimator.oob_decision_function_[:, 1]
+                if np.any(np.isnan(env_preds)):
+                    fallback = estimator.predict_proba(X_e)[:, 1]
+                    env_preds = np.where(np.isnan(env_preds), fallback, env_preds)
+
             preds[mask] = env_preds
 
         return preds

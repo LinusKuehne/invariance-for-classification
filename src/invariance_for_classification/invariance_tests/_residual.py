@@ -3,7 +3,7 @@ from typing import Any
 import numpy as np
 import scipy.stats as stats
 from sklearn.base import clone
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
@@ -40,7 +40,8 @@ class InvariantResidualDistributionTest(InvarianceTest):
     Parameters
     ----------
     test_classifier_type : str, default="RF"
-        "RF" for random forest, "LR" for logistic regression.
+        "RF" for random forest, "LR" for logistic regression,
+        "HGBT" for histogram gradient boosting.
     """
 
     def __init__(
@@ -54,6 +55,8 @@ class InvariantResidualDistributionTest(InvarianceTest):
             )
         elif test_classifier_type == "LR":
             self.estimator = LogisticRegression(random_state=42)
+        elif test_classifier_type == "HGBT":
+            self.estimator = HistGradientBoostingClassifier(random_state=42)
         else:
             raise ValueError(f"Unknown test_classifier_type: {test_classifier_type}")
 

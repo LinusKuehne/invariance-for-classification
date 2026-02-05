@@ -1,6 +1,6 @@
 import numpy as np
 from scipy import stats
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder
@@ -153,7 +153,7 @@ class DeLongTest(InvarianceTest):
         self.n_folds = n_folds
         self.random_state = random_state
 
-        if test_classifier_type not in ["RF", "LR"]:
+        if test_classifier_type not in ["RF", "LR", "HGBT"]:
             raise ValueError(f"Unknown test_classifier_type: {test_classifier_type}")
 
         self.name = "delong"
@@ -202,6 +202,33 @@ class DeLongTest(InvarianceTest):
             )
             lr_without_E.fit(X_without_E[train_idx], y[train_idx])
             preds_without_E[test_idx] = lr_without_E.predict_proba(
+                X_without_E[test_idx]
+            )[:, 1]
+
+        return preds_with_E, preds_without_E
+
+    def _get_predictions_hgbt(
+        self, X_with_E: np.ndarray, X_without_E: np.ndarray, y: np.ndarray
+    ) -> tuple:
+        """Get cross-validated predictions from histogram gradient boosting."""
+        n_samples = len(y)
+        preds_with_E = np.zeros(n_samples)
+        preds_without_E = np.zeros(n_samples)
+
+        kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.random_state)
+
+        for train_idx, test_idx in kf.split(X_with_E):
+            # model with E
+            hgbt_with_E = HistGradientBoostingClassifier(random_state=self.random_state)
+            hgbt_with_E.fit(X_with_E[train_idx], y[train_idx])
+            preds_with_E[test_idx] = hgbt_with_E.predict_proba(X_with_E[test_idx])[:, 1]
+
+            # model without E (permuted E)
+            hgbt_without_E = HistGradientBoostingClassifier(
+                random_state=self.random_state
+            )
+            hgbt_without_E.fit(X_without_E[train_idx], y[train_idx])
+            preds_without_E[test_idx] = hgbt_without_E.predict_proba(
                 X_without_E[test_idx]
             )[:, 1]
 
@@ -256,6 +283,10 @@ class DeLongTest(InvarianceTest):
         try:
             if self.test_classifier_type == "RF":
                 preds_with_E, preds_without_E = self._get_predictions_rf(
+                    X_with_E, X_without_E, y
+                )
+            elif self.test_classifier_type == "HGBT":
+                preds_with_E, preds_without_E = self._get_predictions_hgbt(
                     X_with_E, X_without_E, y
                 )
             else:  # LR

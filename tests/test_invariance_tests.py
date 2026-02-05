@@ -122,13 +122,13 @@ class TestInvarianceTests:
     """Tests for all invariance tests (parameterized)."""
 
     @pytest.mark.parametrize("inv_test_cls", get_invariance_test_classes())
-    @pytest.mark.parametrize("clf_type", ["RF", "LR"])
+    @pytest.mark.parametrize("clf_type", ["RF", "LR", "HGBT"])
     def test_p_value_bounds(self, synthetic_data, inv_test_cls, clf_type):
         """P-values should be in [0, 1]."""
         X, y, E = synthetic_data
         try:
             test = inv_test_cls(test_classifier_type=clf_type)
-        except NotImplementedError:
+        except (NotImplementedError, ValueError):
             pytest.skip(f"{inv_test_cls.__name__} does not support {clf_type}")
         p_val = test.test(X, y, E)
         assert 0 <= p_val <= 1
@@ -161,13 +161,13 @@ class TestInvarianceTests:
         assert p_val > 0.01
 
     @pytest.mark.parametrize("inv_test_cls", get_invariance_test_classes())
-    @pytest.mark.parametrize("clf_type", ["RF", "LR"])
+    @pytest.mark.parametrize("clf_type", ["RF", "LR", "HGBT"])
     def test_deterministic_with_seed(self, synthetic_data, inv_test_cls, clf_type):
         """Results should be reproducible with same random state."""
         X, y, E = synthetic_data
         try:
             test = inv_test_cls(test_classifier_type=clf_type)
-        except NotImplementedError:
+        except (NotImplementedError, ValueError):
             pytest.skip(f"{inv_test_cls.__name__} does not support {clf_type}")
         p1 = test.test(X, y, E)
         p2 = test.test(X, y, E)

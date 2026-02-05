@@ -17,10 +17,11 @@ Krueger et al. "Out-of-Distribution Generalization via Risk Extrapolation"
 https://arxiv.org/abs/2003.00688
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.model_selection import KFold
 
 from ..invariance_tests._vrex import _binary_cross_entropy
 
@@ -30,10 +31,12 @@ def _get_global_predictions(
     y: np.ndarray,
     n_estimators: int = 100,
     random_state: Optional[int] = 42,
+    classifier_type: Literal["RF", "HGBT"] = "RF",
+    n_folds: int = 5,
 ) -> np.ndarray:
     """
     Get out-of-sample predictions from global model trained on all data.
-    Uses OOB predictions from Random Forest.
+    Uses OOB predictions for RF, cross-validation for HGBT.
 
     Parameters
     ----------
@@ -42,9 +45,13 @@ def _get_global_predictions(
     y : np.ndarray of shape (n_samples,)
         Target variable, binary {0, 1}.
     n_estimators : int, default=100
-        Number of trees in the random forest.
+        Number of trees in the random forest (only used for RF).
     random_state : int or None, default=42
         Random seed for reproducibility.
+    classifier_type : {"RF", "HGBT"}, default="RF"
+        Classifier type to use.
+    n_folds : int, default=5
+        Number of folds for cross-validation (only used for HGBT).
 
     Returns
     -------
@@ -58,6 +65,16 @@ def _get_global_predictions(
         mean_y = np.mean(y)
         return np.full(n, mean_y)
 
+    if classifier_type == "HGBT":
+        preds = np.zeros(n)
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        for train_idx, test_idx in kf.split(X):
+            estimator = HistGradientBoostingClassifier(random_state=random_state)
+            estimator.fit(X[train_idx], y[train_idx])
+            preds[test_idx] = estimator.predict_proba(X[test_idx])[:, 1]
+        return preds
+
+    # Default: RF with OOB
     estimator = RandomForestClassifier(
         n_estimators=n_estimators,
         oob_score=True,
@@ -81,12 +98,14 @@ def _get_env_specific_predictions(
     unique_envs: np.ndarray,
     n_estimators: int = 100,
     random_state: Optional[int] = 42,
+    classifier_type: Literal["RF", "HGBT"] = "RF",
+    n_folds: int = 5,
 ) -> np.ndarray:
     """
     Get out-of-sample predictions from environment-specific models.
 
-    For each environment e, train a Random Forest only on data from that
-    environment and get OOB predictions for observations in that environment.
+    For each environment e, train a model only on data from that
+    environment and get out-of-sample predictions.
 
     Parameters
     ----------
@@ -99,9 +118,13 @@ def _get_env_specific_predictions(
     unique_envs : np.ndarray
         Array of unique environment values.
     n_estimators : int, default=100
-        Number of trees in the random forest.
+        Number of trees in the random forest (only used for RF).
     random_state : int or None, default=42
         Random seed for reproducibility.
+    classifier_type : {\"RF\", \"HGBT\"}, default=\"RF\"
+        Classifier type to use.
+    n_folds : int, default=5
+        Number of folds for cross-validation (only used for HGBT).
 
     Returns
     -------
@@ -134,18 +157,31 @@ def _get_env_specific_predictions(
             preds[mask] = np.mean(y_e)
             continue
 
-        estimator = RandomForestClassifier(
-            n_estimators=n_estimators,
-            oob_score=True,
-            random_state=random_state,
-            n_jobs=1,
-        )
-        estimator.fit(X_e, y_e)
+        if classifier_type == "HGBT":
+            # Use cross-validation within environment for HGBT
+            env_preds = np.zeros(n_e)
+            kf = KFold(
+                n_splits=min(n_folds, n_e), shuffle=True, random_state=random_state
+            )
+            for train_idx, test_idx in kf.split(X_e):
+                estimator = HistGradientBoostingClassifier(random_state=random_state)
+                estimator.fit(X_e[train_idx], y_e[train_idx])
+                env_preds[test_idx] = estimator.predict_proba(X_e[test_idx])[:, 1]
+        else:
+            # RF with OOB
+            estimator = RandomForestClassifier(
+                n_estimators=n_estimators,
+                oob_score=True,
+                random_state=random_state,
+                n_jobs=1,
+            )
+            estimator.fit(X_e, y_e)
 
-        env_preds = estimator.oob_decision_function_[:, 1]
-        if np.any(np.isnan(env_preds)):
-            fallback = estimator.predict_proba(X_e)[:, 1]
-            env_preds = np.where(np.isnan(env_preds), fallback, env_preds)
+            env_preds = estimator.oob_decision_function_[:, 1]
+            if np.any(np.isnan(env_preds)):
+                fallback = estimator.predict_proba(X_e)[:, 1]
+                env_preds = np.where(np.isnan(env_preds), fallback, env_preds)
+
         preds[mask] = env_preds
 
     return preds
@@ -157,6 +193,8 @@ def vrex_ranking(
     X_S: np.ndarray,
     n_estimators: int = 100,
     random_state: Optional[int] = 42,
+    classifier_type: Literal["RF", "HGBT"] = "RF",
+    n_folds: int = 5,
 ) -> float:
     """
     Compute the V-REx-inspired invariance ranking score.
@@ -181,9 +219,13 @@ def vrex_ranking(
     X_S : np.ndarray of shape (n_samples, n_features)
         Subset of predictors to evaluate.
     n_estimators : int, default=100
-        Number of trees in the random forest.
+        Number of trees in the random forest (only used for RF).
     random_state : int or None, default=42
         Random seed for reproducibility.
+    classifier_type : {\"RF\", \"HGBT\"}, default=\"RF\"
+        Classifier type to use.
+    n_folds : int, default=5
+        Number of folds for cross-validation (only used for HGBT).
 
     Returns
     -------
@@ -203,11 +245,13 @@ def vrex_ranking(
     E = np.asarray(E)
 
     # get predictions from global model f trained on X_S
-    global_preds = _get_global_predictions(X_S, Y, n_estimators, random_state)
+    global_preds = _get_global_predictions(
+        X_S, Y, n_estimators, random_state, classifier_type, n_folds
+    )
 
     # get predictions from environment-specific models g_e trained on X_S
     env_specific_preds = _get_env_specific_predictions(
-        X_S, Y, E, unique_envs, n_estimators, random_state
+        X_S, Y, E, unique_envs, n_estimators, random_state, classifier_type, n_folds
     )
 
     # compute element-wise BCE losses

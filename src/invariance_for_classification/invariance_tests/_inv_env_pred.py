@@ -2,7 +2,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 from scipy import stats
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder
 
 from ._base import InvarianceTest
@@ -56,34 +57,39 @@ class InvariantEnvironmentPredictionTest(InvarianceTest):
     Parameters
     ----------
     test_classifier_type : str, optional
-        "RF" for random forest, "LR" for logistic regression.
-        Currently only "RF" is implemented. Default is "RF".
+        "RF" for random forest, "HGBT" for histogram gradient boosting,
+        "LR" for logistic regression (not yet implemented).
+        Default is "RF".
     random_state : int, default=42
         Random state for reproducibility.
+    n_folds : int, default=5
+        Number of folds for cross-validation (used for HGBT).
     """
 
     def __init__(
         self,
         test_classifier_type: Optional[str] = None,
         random_state: int = 42,
+        n_folds: int = 5,
     ):
         if test_classifier_type is None:
             test_classifier_type = "RF"
 
-        if test_classifier_type not in ["RF", "LR"]:
+        if test_classifier_type not in ["RF", "LR", "HGBT"]:
             raise ValueError(
                 f"Unknown test_classifier_type: {test_classifier_type}. "
-                "Must be 'RF' or 'LR'."
+                "Must be 'RF', 'HGBT', or 'LR'."
             )
 
         if test_classifier_type == "LR":
             raise NotImplementedError(
                 "Logistic regression is not yet implemented for "
-                "InvariantEnvironmentPredictionTest. Use 'RF' instead."
+                "InvariantEnvironmentPredictionTest. Use 'RF' or 'HGBT' instead."
             )
 
         self.test_classifier_type = test_classifier_type
         self.random_state = random_state
+        self.n_folds = n_folds
         self.name = "inv_env_pred"
 
     def _get_oob_predictions_rf(
@@ -121,6 +127,52 @@ class InvariantEnvironmentPredictionTest(InvarianceTest):
         )
         rf_with_Y_permuted.fit(X_with_Y_permuted, E)
         probs_with_Y_permuted: np.ndarray = rf_with_Y_permuted.oob_decision_function_
+
+        return probs_with_Y, probs_with_Y_permuted
+
+    def _get_cv_predictions_hgbt(
+        self, X_with_Y: np.ndarray, X_with_Y_permuted: np.ndarray, E: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get cross-validated predictions from HGBT for environment prediction.
+
+        Parameters
+        ----------
+        X_with_Y : np.ndarray
+            Features including true Y, shape (n_samples, n_features + 1).
+        X_with_Y_permuted : np.ndarray
+            Features including permuted Y, shape (n_samples, n_features + 1).
+        E : np.ndarray
+            Environment labels to predict, shape (n_samples,).
+
+        Returns
+        -------
+        probs_with_Y : np.ndarray
+            CV predicted probabilities for E from model with true Y.
+        probs_with_Y_permuted : np.ndarray
+            CV predicted probabilities for E from model with permuted Y.
+        """
+        n_samples = len(E)
+        n_classes = len(np.unique(E))
+        probs_with_Y = np.zeros((n_samples, n_classes))
+        probs_with_Y_permuted = np.zeros((n_samples, n_classes))
+
+        kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.random_state)
+
+        for train_idx, test_idx in kf.split(X_with_Y):
+            # model with true Y
+            hgbt_with_Y = HistGradientBoostingClassifier(random_state=self.random_state)
+            hgbt_with_Y.fit(X_with_Y[train_idx], E[train_idx])
+            probs_with_Y[test_idx] = hgbt_with_Y.predict_proba(X_with_Y[test_idx])
+
+            # model with permuted Y
+            hgbt_with_Y_permuted = HistGradientBoostingClassifier(
+                random_state=self.random_state
+            )
+            hgbt_with_Y_permuted.fit(X_with_Y_permuted[train_idx], E[train_idx])
+            probs_with_Y_permuted[test_idx] = hgbt_with_Y_permuted.predict_proba(
+                X_with_Y_permuted[test_idx]
+            )
 
         return probs_with_Y, probs_with_Y_permuted
 
@@ -174,12 +226,16 @@ class InvariantEnvironmentPredictionTest(InvarianceTest):
         else:
             X_with_Y_permuted = np.hstack([X, y_permuted])
 
-        # get OOB predictions
+        # get OOB/CV predictions
         probs_with_Y: np.ndarray = np.array([])
         probs_with_Y_permuted: np.ndarray = np.array([])
         try:
             if self.test_classifier_type == "RF":
                 probs_with_Y, probs_with_Y_permuted = self._get_oob_predictions_rf(
+                    X_with_Y, X_with_Y_permuted, E_encoded
+                )
+            elif self.test_classifier_type == "HGBT":
+                probs_with_Y, probs_with_Y_permuted = self._get_cv_predictions_hgbt(
                     X_with_Y, X_with_Y_permuted, E_encoded
                 )
         except Exception:

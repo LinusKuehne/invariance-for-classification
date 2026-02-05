@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy import stats
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import OneHotEncoder
 
@@ -20,7 +20,8 @@ class TramGcmTest(InvarianceTest):
     ----------
     test_classifier_type : str, default="RF"
         "RF" for random forest (rangerICP equivalent),
-        "LR" for logistic regression (glmICP equivalent).
+        "LR" for logistic regression (glmICP equivalent),
+        "HGBT" for histogram gradient boosting.
 
     Notes
     -----
@@ -30,12 +31,19 @@ class TramGcmTest(InvarianceTest):
 
     For LR mode: tramicp's glmICP uses binomial GLM with response residuals (Y - fitted_prob).
     We use LogisticRegression to get fitted probabilities.
+
+    For HGBT mode: Uses HistGradientBoostingRegressor for regression.
     """
 
     def __init__(
         self,
         test_classifier_type: str = "RF",
     ):
+        if test_classifier_type not in ["RF", "LR", "HGBT"]:
+            raise ValueError(
+                f"Unknown test_classifier_type: {test_classifier_type}. "
+                "Must be 'RF', 'LR', or 'HGBT'."
+            )
         self.test_classifier_type = test_classifier_type
         self.name = "tram_gcm"
 
@@ -67,6 +75,7 @@ class TramGcmTest(InvarianceTest):
 
         # For RF: tramicp uses regression forest on numeric Y (not probability forest)
         # For LR: tramicp uses binomial GLM with response residuals
+        # For HGBT: uses histogram gradient boosting regressor
         if n_features == 0:
             # null model: predict global mean everywhere
             mean_y = np.mean(y)
@@ -84,6 +93,10 @@ class TramGcmTest(InvarianceTest):
                     bootstrap=True,
                     n_jobs=1,
                 )
+                reg.fit(X, y)
+                y_hat = reg.predict(X)
+            elif self.test_classifier_type == "HGBT":
+                reg = HistGradientBoostingRegressor(random_state=42)
                 reg.fit(X, y)
                 y_hat = reg.predict(X)
             elif self.test_classifier_type == "LR":
@@ -131,19 +144,22 @@ class TramGcmTest(InvarianceTest):
                 e_hat = np.mean(e_col)
                 res_e = e_col - e_hat
             else:
-                # 'tramicp' uses RF for E ~ X (gcm.test default)
-                # even if E columns are binary dummies, they are treated as numeric targets in 'ranger'
-                # Ranger defaults: mtry = floor(sqrt(p)), min.node.size = 5 for regression
-                mtry = max(1, int(np.sqrt(n_features)))
-                rf_e = RandomForestRegressor(
-                    n_estimators=500,
-                    max_features=mtry,
-                    min_samples_leaf=5,
-                    random_state=42,
-                    n_jobs=1,
-                )
-                rf_e.fit(X, e_col)
-                e_pred = rf_e.predict(X)
+                if self.test_classifier_type == "HGBT":
+                    reg_e = HistGradientBoostingRegressor(random_state=42)
+                else:
+                    # 'tramicp' uses RF for E ~ X (gcm.test default)
+                    # even if E columns are binary dummies, they are treated as numeric targets in 'ranger'
+                    # Ranger defaults: mtry = floor(sqrt(p)), min.node.size = 5 for regression
+                    mtry = max(1, int(np.sqrt(n_features)))
+                    reg_e = RandomForestRegressor(
+                        n_estimators=500,
+                        max_features=mtry,
+                        min_samples_leaf=5,
+                        random_state=42,
+                        n_jobs=1,
+                    )
+                reg_e.fit(X, e_col)
+                e_pred = reg_e.predict(X)
                 res_e = e_col - e_pred
             r_e_list.append(res_e)
 
