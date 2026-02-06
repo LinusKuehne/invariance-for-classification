@@ -11,17 +11,19 @@ from ._base import InvarianceTest
 
 class TramGcmTest(InvarianceTest):
     """
-    Tram-GCM test (Python implementation)
+    Tram-GCM test (Python implementation).
 
     Tests the null hypothesis that the given set of predictors is invariant.
-    Re-implementation of the TRAM-GCM test from the R package 'tramicp' for binary classification in Python.
+    Re-implementation of the TRAM-GCM test from the R package 'tramicp' for
+    binary classification in Python.
 
     Parameters
     ----------
     test_classifier_type : str, default="RF"
-        "RF" for random forest (rangerICP equivalent),
-        "LR" for logistic regression (glmICP equivalent),
-        "HGBT" for histogram gradient boosting.
+        Classifier type to use. Supported values:
+        - "RF": Random Forest regressor (rangerICP equivalent)
+        - "HGBT": Histogram Gradient Boosting regressor
+        - "LR": Logistic Regression (glmICP equivalent)
 
     Notes
     -----

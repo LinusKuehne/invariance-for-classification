@@ -12,7 +12,7 @@ from ._base import InvarianceTest
 
 class InvariantResidualDistributionTest(InvarianceTest):
     """
-    Invariant residual distribution test
+    Invariant residual distribution test.
 
     Tests the null hypothesis that the residuals of a model predicting Y from X_S
     have the same mean across all envs E.
@@ -35,13 +35,15 @@ class InvariantResidualDistributionTest(InvarianceTest):
     E[R|E] = 0 for all E, but does NOT imply equal marginal variances.
 
     For RFs, OOB predictions are preferred to avoid overfitted residuals.
-    For logistic regression, we use cross-validation.
+    For LR and HGBT, we use cross-validation.
 
     Parameters
     ----------
     test_classifier_type : str, default="RF"
-        "RF" for random forest, "LR" for logistic regression,
-        "HGBT" for histogram gradient boosting.
+        Classifier type to use. Supported values:
+        - "RF": Random Forest (uses OOB predictions)
+        - "HGBT": Histogram Gradient Boosting (uses cross-validation)
+        - "LR": Logistic Regression (uses cross-validation)
     """
 
     def __init__(
@@ -54,7 +56,7 @@ class InvariantResidualDistributionTest(InvarianceTest):
                 n_estimators=100, oob_score=True, random_state=42, n_jobs=1
             )
         elif test_classifier_type == "LR":
-            self.estimator = LogisticRegression(random_state=42)
+            self.estimator = LogisticRegression(random_state=42, max_iter=100)
         elif test_classifier_type == "HGBT":
             self.estimator = HistGradientBoostingClassifier(random_state=42)
         else:

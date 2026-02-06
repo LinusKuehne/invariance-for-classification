@@ -56,10 +56,11 @@ class InvariantEnvironmentPredictionTest(InvarianceTest):
 
     Parameters
     ----------
-    test_classifier_type : str, optional
-        "RF" for random forest, "HGBT" for histogram gradient boosting,
-        "LR" for logistic regression (not yet implemented).
-        Default is "RF".
+    test_classifier_type : str, default="RF"
+        Classifier type to use. Supported values:
+        - "RF": Random Forest (uses OOB predictions)
+        - "HGBT": Histogram Gradient Boosting (uses cross-validation)
+        Note: "LR" is not supported for this test.
     random_state : int, default=42
         Random state for reproducibility.
     n_folds : int, default=5

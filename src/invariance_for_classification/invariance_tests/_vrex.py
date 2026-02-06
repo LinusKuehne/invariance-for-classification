@@ -70,10 +70,10 @@ class VRExTest(InvarianceTest):
     Parameters
     ----------
     test_classifier_type : str or None, default=None
-        Classifier type to use. Valid options are None, "RF", "HGBT", or "LR".
-        "RF" uses Random Forest with OOB predictions.
-        "HGBT" uses Histogram Gradient Boosting with cross-validation.
-        "LR" defaults to "RF" for compatibility.
+        Classifier type to use. Supported values:
+        - None or "RF": Random Forest (uses OOB predictions)
+        - "HGBT": Histogram Gradient Boosting (uses cross-validation)
+        Note: "LR" is accepted for API compatibility but defaults to "RF".
     n_estimators : int, default=100
         Number of trees in the random forest (only used for RF).
     use_anova : bool, default=False

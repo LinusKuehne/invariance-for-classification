@@ -136,9 +136,12 @@ class DeLongTest(InvarianceTest):
     Parameters
     ----------
     test_classifier_type : str, default="RF"
-        "RF" for random forest, "LR" for logistic regression.
+        Classifier type to use. Supported values:
+        - "RF": Random Forest (uses OOB predictions)
+        - "HGBT": Histogram Gradient Boosting (uses cross-validation)
+        - "LR": Logistic Regression (uses cross-validation)
     n_folds : int, default=10
-        Number of folds for cross-validation (used for LR to get predictions).
+        Number of folds for cross-validation (used for LR and HGBT).
     random_state : int, default=42
         Random state for reproducibility.
     """
