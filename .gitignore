@@ -213,4 +213,4 @@ settings.json
 dev_scripts/
 .DS_Store
 .credentials
-data/
+results/
