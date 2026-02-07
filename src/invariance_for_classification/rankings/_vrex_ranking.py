@@ -1,16 +1,23 @@
 """
-V-REx-inspired Invariance Ranking.
+V-REx-inspired Invariance Ranking (LOEO Regret approach).
 
 This implements a ranking metric inspired by the Variance Risk Extrapolation (V-REx)
-concept. Unlike the VRExTest which computes a p-value, this ranking directly uses
-the negative variance of mean regrets across environments.
+concept using a Leave-One-Environment-Out (LOEO) regret approach.
 
-The intuition: if Y|X_S is truly invariant across environments, then the mean regret
-(difference between global and environment-specific model losses) should be similar
-across environments, resulting in low variance.
+For each held-out environment e:
+  1. Train a global model on all other environments → evaluate on e → global_loss_e
+  2. Train individual models on each other env e' → evaluate on e → env_loss_e'
+  3. regret_e = global_loss_e - mean(env_loss_e')
 
-We return the negative variance so that higher values indicate "more invariant"
-(consistent with wanting to maximize the ranking score for invariant subsets).
+Return -Var(regrets). Higher values (closer to 0) indicate "more invariant".
+
+Intuition: If Y|X_S is truly invariant, a model pooling data from multiple
+environments should perform comparably to individual environment models when
+transferred to a new environment. The regret should be consistently small (low
+variance) across held-out environments.
+
+The regret formulation normalises away base-rate differences across environments,
+making the ranking robust to datasets where P(Y=1) varies across environments.
 
 Inspired by the V-REx penalty idea from:
 Krueger et al. "Out-of-Distribution Generalization via Risk Extrapolation"
@@ -21,170 +28,66 @@ from typing import Literal, Optional
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
-from sklearn.model_selection import KFold
 
 from ..invariance_tests._vrex import _binary_cross_entropy
 
 
-def _get_global_predictions(
-    X: np.ndarray,
-    y: np.ndarray,
-    n_estimators: int = 100,
+def _make_classifier(
+    classifier_type: Literal["RF", "HGBT"] = "HGBT",
     random_state: Optional[int] = 42,
-    classifier_type: Literal["RF", "HGBT"] = "RF",
-    n_folds: int = 5,
-) -> np.ndarray:
+    n_estimators: int = 100,
+) -> RandomForestClassifier | HistGradientBoostingClassifier:
     """
-    Get out-of-sample predictions from global model trained on all data.
-    Uses OOB predictions for RF, cross-validation for HGBT.
+    Create a classifier with appropriate regularisation.
 
     Parameters
     ----------
-    X : np.ndarray of shape (n_samples, n_features)
-        Feature matrix.
-    y : np.ndarray of shape (n_samples,)
-        Target variable, binary {0, 1}.
-    n_estimators : int, default=100
-        Number of trees in the random forest (only used for RF).
+    classifier_type : {"RF", "HGBT"}, default="HGBT"
+        Classifier type to create.
     random_state : int or None, default=42
         Random seed for reproducibility.
-    classifier_type : {"RF", "HGBT"}, default="RF"
-        Classifier type to use.
-    n_folds : int, default=5
-        Number of folds for cross-validation (only used for HGBT).
+    n_estimators : int, default=100
+        Number of trees (RF only).
 
     Returns
     -------
-    np.ndarray
-        Out-of-sample predicted probabilities for class 1.
+    RandomForestClassifier or HistGradientBoostingClassifier
     """
-    n = len(y)
-
-    # handle empty feature set
-    if X.shape[1] == 0:
-        mean_y = np.mean(y)
-        return np.full(n, mean_y)
-
     if classifier_type == "HGBT":
-        preds = np.zeros(n)
-        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-        for train_idx, test_idx in kf.split(X):
-            estimator = HistGradientBoostingClassifier(random_state=random_state)
-            estimator.fit(X[train_idx], y[train_idx])
-            preds[test_idx] = estimator.predict_proba(X[test_idx])[:, 1]
-        return preds
-
-    # Default: RF with OOB
-    estimator = RandomForestClassifier(
+        return HistGradientBoostingClassifier(
+            random_state=random_state,
+            min_samples_leaf=20,
+            max_depth=4,
+            learning_rate=0.05,
+            max_iter=200,
+        )
+    return RandomForestClassifier(
         n_estimators=n_estimators,
-        oob_score=True,
         random_state=random_state,
         n_jobs=1,
     )
-    estimator.fit(X, y)
-
-    preds = estimator.oob_decision_function_[:, 1]
-    # handle any NaN OOB predictions
-    if np.any(np.isnan(preds)):
-        fallback = estimator.predict_proba(X)[:, 1]
-        preds = np.where(np.isnan(preds), fallback, preds)
-    return preds
 
 
-def _get_env_specific_predictions(
-    X: np.ndarray,
-    y: np.ndarray,
-    E: np.ndarray,
-    unique_envs: np.ndarray,
-    n_estimators: int = 100,
-    random_state: Optional[int] = 42,
-    classifier_type: Literal["RF", "HGBT"] = "RF",
-    n_folds: int = 5,
-) -> np.ndarray:
+def _mean_bce_loss(
+    clf: RandomForestClassifier | HistGradientBoostingClassifier,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+) -> float:
     """
-    Get out-of-sample predictions from environment-specific models.
+    Train *clf* on (X_train, y_train) and return mean BCE loss on (X_test, y_test).
 
-    For each environment e, train a model only on data from that
-    environment and get out-of-sample predictions.
-
-    Parameters
-    ----------
-    X : np.ndarray of shape (n_samples, n_features)
-        Feature matrix.
-    y : np.ndarray of shape (n_samples,)
-        Target variable, binary {0, 1}.
-    E : np.ndarray of shape (n_samples,)
-        Environment indicator.
-    unique_envs : np.ndarray
-        Array of unique environment values.
-    n_estimators : int, default=100
-        Number of trees in the random forest (only used for RF).
-    random_state : int or None, default=42
-        Random seed for reproducibility.
-    classifier_type : {\"RF\", \"HGBT\"}, default=\"RF\"
-        Classifier type to use.
-    n_folds : int, default=5
-        Number of folds for cross-validation (only used for HGBT).
-
-    Returns
-    -------
-    np.ndarray
-        Out-of-sample predicted probabilities for class 1.
+    If the training set contains only one class, the marginal rate is predicted
+    instead of fitting the classifier.
     """
-    n = len(y)
-    preds = np.zeros(n)
+    if len(np.unique(y_train)) < 2:
+        p = float(np.mean(y_train))
+        return float(np.mean(_binary_cross_entropy(y_test, np.full(len(y_test), p))))
 
-    # handle empty feature set
-    if X.shape[1] == 0:
-        for e in unique_envs:
-            mask = E == e
-            preds[mask] = np.mean(y[mask])
-        return preds
-
-    for e in unique_envs:
-        mask = E == e
-        X_e = X[mask]
-        y_e = y[mask]
-        n_e = len(y_e)
-
-        # need at least some samples to train
-        if n_e < 5:
-            preds[mask] = np.mean(y_e) if n_e > 0 else 0.5
-            continue
-
-        # check if y_e has both classes
-        if len(np.unique(y_e)) < 2:
-            preds[mask] = np.mean(y_e)
-            continue
-
-        if classifier_type == "HGBT":
-            # Use cross-validation within environment for HGBT
-            env_preds = np.zeros(n_e)
-            kf = KFold(
-                n_splits=min(n_folds, n_e), shuffle=True, random_state=random_state
-            )
-            for train_idx, test_idx in kf.split(X_e):
-                estimator = HistGradientBoostingClassifier(random_state=random_state)
-                estimator.fit(X_e[train_idx], y_e[train_idx])
-                env_preds[test_idx] = estimator.predict_proba(X_e[test_idx])[:, 1]
-        else:
-            # RF with OOB
-            estimator = RandomForestClassifier(
-                n_estimators=n_estimators,
-                oob_score=True,
-                random_state=random_state,
-                n_jobs=1,
-            )
-            estimator.fit(X_e, y_e)
-
-            env_preds = estimator.oob_decision_function_[:, 1]
-            if np.any(np.isnan(env_preds)):
-                fallback = estimator.predict_proba(X_e)[:, 1]
-                env_preds = np.where(np.isnan(env_preds), fallback, env_preds)
-
-        preds[mask] = env_preds
-
-    return preds
+    clf.fit(X_train, y_train)
+    preds = clf.predict_proba(X_test)[:, 1]
+    return float(np.mean(_binary_cross_entropy(y_test, preds)))
 
 
 def vrex_ranking(
@@ -193,22 +96,24 @@ def vrex_ranking(
     X_S: np.ndarray,
     n_estimators: int = 100,
     random_state: Optional[int] = 42,
-    classifier_type: Literal["RF", "HGBT"] = "RF",
+    classifier_type: Literal["RF", "HGBT"] = "HGBT",
     n_folds: int = 5,
 ) -> float:
     """
-    Compute the V-REx-inspired invariance ranking score.
+    Compute the V-REx-inspired invariance ranking score (LOEO regret variant).
 
-    This function computes the negative variance of mean regrets across environments.
-    Higher values (less negative) indicate more invariance, as similar mean regrets
-    across environments suggest that Y|X_S is invariant.
+    Uses a Leave-One-Environment-Out scheme:
 
-    Algorithm:
-    1. Train a global model f on X_S using all data
-    2. For each environment e, train an environment-specific model g_e on X_S
-    3. Compute regret for each observation: D_i = BCE(y_i, f(x_S_i)) - BCE(y_i, g_e(x_S_i))
-    4. Compute mean regret within each environment
-    5. Return negative variance of these |E| mean regrets
+    For each held-out environment *e*:
+      1. Train a **global** model on data from all other environments and
+         compute its mean BCE loss on *e* → ``global_loss_e``.
+      2. For every other environment *e'*, train an **env-specific** model on
+         *e'* alone and compute its mean BCE loss on *e* → ``env_loss_{e',e}``.
+      3. ``regret_e = global_loss_e - mean(env_loss_{e',e}  for e' ≠ e)``
+
+    Return ``-Var(regrets)``.
+
+    Higher values (closer to 0) indicate more invariance.
 
     Parameters
     ----------
@@ -222,15 +127,15 @@ def vrex_ranking(
         Number of trees in the random forest (only used for RF).
     random_state : int or None, default=42
         Random seed for reproducibility.
-    classifier_type : {\"RF\", \"HGBT\"}, default=\"RF\"
-        Classifier type to use.
+    classifier_type : {"RF", "HGBT"}, default="HGBT"
+        Classifier type to use. HGBT is recommended for best performance.
     n_folds : int, default=5
-        Number of folds for cross-validation (only used for HGBT).
+        Unused. Kept for backward compatibility.
 
     Returns
     -------
     float
-        Negative variance of mean regrets across environments.
+        Negative variance of LOEO regrets across environments.
         Higher values (closer to 0) indicate more invariance.
         Returns 0.0 for edge cases (single environment, insufficient data).
     """
@@ -244,32 +149,51 @@ def vrex_ranking(
     Y = np.asarray(Y).astype(int)
     E = np.asarray(E)
 
-    # get predictions from global model f trained on X_S
-    global_preds = _get_global_predictions(
-        X_S, Y, n_estimators, random_state, classifier_type, n_folds
-    )
+    regrets: list[float] = []
 
-    # get predictions from environment-specific models g_e trained on X_S
-    env_specific_preds = _get_env_specific_predictions(
-        X_S, Y, E, unique_envs, n_estimators, random_state, classifier_type, n_folds
-    )
+    for e in unique_envs:
+        mask_test = E == e
+        mask_train = E != e
+        other_envs = [e2 for e2 in unique_envs if e2 != e]
+        y_test = Y[mask_test]
 
-    # compute element-wise BCE losses
-    bce_global = _binary_cross_entropy(Y, global_preds)
-    bce_env_specific = _binary_cross_entropy(Y, env_specific_preds)
+        # --- global model trained on all other environments ---
+        if X_S.shape[1] == 0:
+            p = float(np.mean(Y[mask_train]))
+            global_loss = float(
+                np.mean(_binary_cross_entropy(y_test, np.full(len(y_test), p)))
+            )
+        else:
+            clf = _make_classifier(classifier_type, random_state, n_estimators)
+            global_loss = _mean_bce_loss(
+                clf, X_S[mask_train], Y[mask_train], X_S[mask_test], y_test
+            )
 
-    # compute regrets: positive regret means global model is worse than env-specific
-    regrets = bce_global - bce_env_specific
+        # --- individual env-specific models (one per other environment) ---
+        env_losses: list[float] = []
+        for e2 in other_envs:
+            mask_e2 = E == e2
+            if X_S.shape[1] == 0:
+                p = float(np.mean(Y[mask_e2]))
+                eloss = float(
+                    np.mean(_binary_cross_entropy(y_test, np.full(len(y_test), p)))
+                )
+            else:
+                clf = _make_classifier(classifier_type, random_state, n_estimators)
+                eloss = _mean_bce_loss(
+                    clf, X_S[mask_e2], Y[mask_e2], X_S[mask_test], y_test
+                )
+            env_losses.append(eloss)
 
-    # compute mean regret within each environment
-    mean_regrets = np.array([np.mean(regrets[E == e]) for e in unique_envs])
+        avg_env_loss = float(np.mean(env_losses))
+        regrets.append(global_loss - avg_env_loss)
+
+    regrets_arr = np.array(regrets)
 
     # check for NaN values (can happen with edge cases)
-    if np.any(np.isnan(mean_regrets)):
+    if np.any(np.isnan(regrets_arr)):
         return 0.0
 
-    # return negative variance of mean regrets
+    # return negative variance of LOEO regrets
     # higher values (less negative) indicate more invariance
-    variance = float(np.var(mean_regrets))
-
-    return -variance
+    return -float(np.var(regrets_arr))
