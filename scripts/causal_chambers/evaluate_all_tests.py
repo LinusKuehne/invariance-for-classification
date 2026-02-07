@@ -472,7 +472,7 @@ def get_all_tests(test_filter: list[str] | None = None) -> dict[str, Any]:
 
     # WGCM: uses xgboost internally, two methods: "est" and "fix"
     # Uses default parameters
-    tests["WGCM_est (xgb)"] = WGCMTest(method="est")
+    tests["WGCM_est (xgb)"] = WGCMTest(method="est", beta=0.5)
     tests["WGCM_fix (xgb)"] = WGCMTest(method="fix")
 
     # Filter tests if requested
@@ -679,6 +679,27 @@ def run_all_tests_parallel(
 # =============================================================================
 
 
+def _pairwise_auc(inv_values: np.ndarray, noninv_values: np.ndarray) -> float:
+    """
+    Compute pairwise AUC: fraction of (inv, noninv) pairs where inv > noninv.
+
+    For both p-value tests (higher p = more invariant) and ranking tests
+    (higher score = more invariant), this measures how well the test
+    separates invariant from non-invariant subsets.
+
+    Returns a value in [0, 1]. A value of 1.0 means perfect separation
+    (all invariant values exceed all non-invariant values). 0.5 means
+    random performance.
+    """
+    count = sum(
+        1.0 if i > n else 0.5 if i == n else 0.0
+        for i in inv_values
+        for n in noninv_values
+    )
+    total = len(inv_values) * len(noninv_values)
+    return count / total if total > 0 else np.nan
+
+
 def compute_metrics(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
     """
     Compute evaluation metrics for each test.
@@ -722,6 +743,9 @@ def compute_metrics(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
         # For p-value tests, higher p-value means more invariant
         is_ranking_test = test_name.startswith("VREx_Ranking")
 
+        # Pairwise AUC: fraction of (inv, noninv) pairs where inv ranks higher
+        auc = _pairwise_auc(inv_values.values, noninv_values.values)
+
         if not is_ranking_test:
             # P-value based metrics
             n_inv = len(inv_values)
@@ -752,6 +776,7 @@ def compute_metrics(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
                     "avg_value_noninv": avg_pval_noninv,
                     "min_pval_inv": min_pval_inv,
                     "max_pval_noninv": max_pval_noninv,
+                    "pairwise_auc": auc,
                 }
             )
         else:
@@ -768,6 +793,7 @@ def compute_metrics(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
                     "avg_value_noninv": avg_score_noninv,
                     "min_pval_inv": np.nan,
                     "max_pval_noninv": np.nan,
+                    "pairwise_auc": auc,
                 }
             )
 
@@ -802,7 +828,7 @@ def print_metrics_summary(metrics_df: pd.DataFrame, alpha: float = 0.05) -> None
         max_name_len = max(len(name) for name in pval_tests["test_name"])
         name_width = max(max_name_len, 20)
 
-        header = f"{'Test':<{name_width}} | FPR    | TPR    | Avg P(inv) | Avg P(non) | Min P(inv) | Max P(non)  "
+        header = f"{'Test':<{name_width}} | FPR    | TPR    | Avg P(inv) | Avg P(non) | Min P(inv) | Max P(non) | AUC   "
         print(f"\n{header}")
         print("-" * len(header))
         for _, row in pval_tests.iterrows():
@@ -814,6 +840,7 @@ def print_metrics_summary(metrics_df: pd.DataFrame, alpha: float = 0.05) -> None
                 f"{row['avg_value_noninv']:10.3f} | "
                 f"{row['min_pval_inv']:10.3f} | "
                 f"{row['max_pval_noninv']:10.3f} | "
+                f"{row['pairwise_auc']:5.3f} | "
             )
 
         print("\nInterpretation:")
@@ -825,6 +852,9 @@ def print_metrics_summary(metrics_df: pd.DataFrame, alpha: float = 0.05) -> None
         print(
             "  - Max P(non): Maximum p-value among non-invariant sets (should be < α ideally)"
         )
+        print(
+            "  - AUC: Pairwise AUC (fraction of inv/noninv pairs correctly ranked; 1.0 = perfect)"
+        )
 
     if len(ranking) > 0:
         print("\n--- VREx Ranking ---")
@@ -832,6 +862,7 @@ def print_metrics_summary(metrics_df: pd.DataFrame, alpha: float = 0.05) -> None
             print(f"\n{row['test_name']}:")
             print(f"  Avg Score (invariant):     {row['avg_value_inv']:.6f}")
             print(f"  Avg Score (non-invariant): {row['avg_value_noninv']:.6f}")
+            print(f"  Pairwise AUC:             {row['pairwise_auc']:.3f}")
         print("\nNote: Higher scores indicate more invariance")
 
 
@@ -987,7 +1018,8 @@ def plot_comparison_summary(
         print("No p-value tests to compare")
         return
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes = axes.flatten()
 
     # Sort by test name for consistent ordering (same test with different models together)
     pval_metrics = pval_metrics.sort_values("test_name")
@@ -1025,6 +1057,7 @@ def plot_comparison_summary(
         color="red",
         alpha=0.7,
     )
+    ax.axhline(y=0.05, color="black", linestyle=":", linewidth=1, label="α=0.05")
     ax.set_xticks(x)
     ax.set_xticklabels(test_names, rotation=45, ha="right")
     ax.set_ylabel("Average p-value")
@@ -1056,6 +1089,31 @@ def plot_comparison_summary(
     ax.set_ylabel("P-value")
     ax.set_title("Critical P-values (min invariant, max non-invariant)")
     ax.legend()
+    ax.set_ylim(0, 1.05)
+
+    # Plot 4: Pairwise AUC (all tests including ranking)
+    ax = axes[3]
+    all_metrics = metrics_df.dropna(subset=["pairwise_auc"]).sort_values("test_name")
+    all_names = all_metrics["test_name"].tolist()
+    x_all = np.arange(len(all_names))
+    bar_colors = [
+        "mediumpurple" if name.startswith("VREx_Ranking") else "steelblue"
+        for name in all_names
+    ]
+    ax.bar(x_all, all_metrics["pairwise_auc"], color=bar_colors, alpha=0.8)
+    ax.axhline(y=0.5, color="black", linestyle=":", linewidth=1, label="Random (0.5)")
+    ax.set_xticks(x_all)
+    ax.set_xticklabels(all_names, rotation=45, ha="right")
+    ax.set_ylabel("Pairwise AUC")
+    ax.set_title("Pairwise AUC (invariant vs non-invariant)")
+    legend_elements_auc = [
+        Patch(facecolor="steelblue", alpha=0.8, label="P-value tests"),
+        Patch(facecolor="mediumpurple", alpha=0.8, label="Ranking tests"),
+        Line2D(
+            [0], [0], color="black", linestyle=":", linewidth=1, label="Random (0.5)"
+        ),
+    ]
+    ax.legend(handles=legend_elements_auc, fontsize=8)
     ax.set_ylim(0, 1.05)
 
     plt.tight_layout()
