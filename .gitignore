@@ -214,3 +214,4 @@ dev_scripts/
 .DS_Store
 .credentials
 results/
+tmp/

@@ -26,8 +26,27 @@ COMMAND LINE FLAGS
 
 --tests <test1> <test2> ...
     Only run specific tests. Use lowercase test names (partial matching).
-    Available tests: crt, delong, invenvpred, residual, tramgcm, vrex, wgcm
     If not specified, all tests are run.
+
+    Available test names (use partial matching, e.g., "delong" matches all DeLong variants):
+      - CRT (HGBT)           - Conditional Randomization Test
+      - CRT (RF)
+      - DeLong (HGBT)        - DeLong AUC comparison test
+      - DeLong (LR)
+      - DeLong (RF)
+      - InvEnvPred (HGBT)    - Invariant Environment Prediction test
+      - InvEnvPred (RF)
+      - Residual (HGBT)      - Invariant Residual Distribution test
+      - Residual (LR)
+      - Residual (RF)
+      - TramGCM (HGBT)       - Tram-GCM test
+      - TramGCM (LR)
+      - TramGCM (RF)
+      - VREx (HGBT)          - V-REx inspired test
+      - VREx (RF)
+      - WGCM_est (xgb)       - Weighted GCM (estimated weights)
+      - WGCM_fix (xgb)       - Weighted GCM (fixed weights)
+
     Examples:
         python evaluate_all_tests.py --dataset simple --tests residual tramgcm vrex
         python evaluate_all_tests.py --dataset simple --tests crt  # runs all CRT variants
@@ -57,6 +76,13 @@ python evaluate_all_tests.py --dataset simple --tests delong
 import argparse
 import itertools
 import os
+
+# Limit threads for OpenMP-based libraries (HGBT, XGBoost) to allow proper
+# parallelization at the process level. Must be set before importing sklearn/xgboost.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
@@ -93,7 +119,9 @@ class DatasetInfo:
     df: pd.DataFrame
     features: list[str]
     all_subsets: list[list[str]]
-    invariant_subsets: set[tuple[str, ...]]  # set of tuples for fast lookup
+    invariant_subsets: set[
+        frozenset[str]
+    ]  # set of frozensets for order-independent lookup
 
 
 @dataclass
@@ -144,17 +172,57 @@ def subset_to_short_str(subset: list[str]) -> str:
     )
 
 
-def _get_invariant_subsets(name: str, features: list[str]) -> set[tuple[str, ...]]:
+def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]]:
     """
     Return set of invariant subsets for a given dataset.
 
     Add new datasets here as they are created.
+    Uses frozenset for order-independent membership checking.
     """
     if name == "simple.csv":
         return {
-            ("X1",),
-            ("X1", "X3"),
+            frozenset({"X1"}),
+            frozenset({"X1", "X3"}),
         }
+
+    if name == "dataset_1_small.csv":
+        return {
+            frozenset(),  # empty set
+            frozenset({"red"}),
+            frozenset({"green"}),
+            frozenset({"blue"}),
+            frozenset({"red", "green"}),
+            frozenset({"red", "blue"}),
+            frozenset({"green", "blue"}),
+            frozenset({"red", "green", "blue"}),
+            frozenset({"red", "green", "blue", "vis_3"}),
+        }
+
+    if name == "dataset_1.csv":
+        # Same as dataset_1_small, but each subset can optionally include ir_1 and/or vis_1
+        base_subsets = [
+            frozenset(),  # empty set
+            frozenset({"red"}),
+            frozenset({"green"}),
+            frozenset({"blue"}),
+            frozenset({"red", "green"}),
+            frozenset({"red", "blue"}),
+            frozenset({"green", "blue"}),
+            frozenset({"red", "green", "blue"}),
+            frozenset({"red", "green", "blue", "vis_3"}),
+        ]
+        # For each base subset, create variants with optional ir_1 and/or vis_1
+        invariant_subsets = set()
+        optional_additions = [
+            frozenset(),
+            frozenset({"ir_1"}),
+            frozenset({"vis_1"}),
+            frozenset({"ir_1", "vis_1"}),
+        ]
+        for base in base_subsets:
+            for addition in optional_additions:
+                invariant_subsets.add(base | addition)
+        return invariant_subsets
 
     # default: empty set (no known invariant subsets)
     return set()
@@ -426,7 +494,7 @@ def _compute_test_for_subset(
     test: Any,
     subset: list[str],
     df: pd.DataFrame,
-    invariant_subsets: set[tuple[str, ...]],
+    invariant_subsets: set[frozenset[str]],
 ) -> TestResult:
     """
     Compute p-value for a single test and subset.
@@ -447,12 +515,12 @@ def _compute_test_for_subset(
         print(f"Warning: {test_name} failed on subset {subset}: {e}")
         pval = np.nan
 
-    subset_tuple = tuple(sorted(subset))
-    is_invariant = subset_tuple in invariant_subsets
+    subset_frozen = frozenset(subset)
+    is_invariant = subset_frozen in invariant_subsets
 
     return TestResult(
         test_name=test_name,
-        subset=subset_tuple,
+        subset=tuple(sorted(subset)),  # Store as sorted tuple for display
         subset_str=subset_to_str(subset),
         is_invariant=is_invariant,
         value=pval,
@@ -462,7 +530,7 @@ def _compute_test_for_subset(
 def _compute_vrex_ranking_for_subset(
     subset: list[str],
     df: pd.DataFrame,
-    invariant_subsets: set[tuple[str, ...]],
+    invariant_subsets: set[frozenset[str]],
     classifier_type: Literal["RF", "HGBT"] = "RF",
 ) -> TestResult:
     """
@@ -484,12 +552,12 @@ def _compute_vrex_ranking_for_subset(
         )
         score = np.nan
 
-    subset_tuple = tuple(sorted(subset))
-    is_invariant = subset_tuple in invariant_subsets
+    subset_frozen = frozenset(subset)
+    is_invariant = subset_frozen in invariant_subsets
 
     return TestResult(
         test_name=f"VREx_Ranking ({classifier_type})",
-        subset=subset_tuple,
+        subset=tuple(sorted(subset)),  # Store as sorted tuple for display
         subset_str=subset_to_str(subset),
         is_invariant=is_invariant,
         value=score,
@@ -500,7 +568,7 @@ def _run_single_test(
     test_name: str,
     df: pd.DataFrame,
     all_subsets: list[list[str]],
-    invariant_subsets: set[tuple[str, ...]],
+    invariant_subsets: set[frozenset[str]],
 ) -> list[TestResult]:
     """
     Run a single test on all subsets. This is the unit of parallelization.
@@ -712,6 +780,12 @@ def print_metrics_summary(metrics_df: pd.DataFrame, alpha: float = 0.05) -> None
     print("TEST EVALUATION METRICS")
     print("=" * 110)
     print(f"\nSignificance level α = {alpha}")
+
+    if len(metrics_df) == 0:
+        print(
+            "\nNo metrics to display (need both invariant and non-invariant subsets)."
+        )
+        return
 
     # Separate p-value tests from ranking
     pval_tests = metrics_df[
