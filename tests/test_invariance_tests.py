@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from invariance_for_classification import (
     StabilizedClassificationClassifier,
@@ -24,7 +25,7 @@ from invariance_for_classification.invariance_tests import InvarianceTest
 # Set to a list of test names to limit which tests run.
 # Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "vrex", "inv_env_pred", "crt"
 # Empty list means all tests will run.
-ENABLED_TESTS: list[str] = ["inv_residual"]
+ENABLED_TESTS: list[str] = ["delong"]
 
 
 def get_invariance_test_classes():
@@ -254,7 +255,12 @@ class TestFindsInvariantSubsets:
                 n_estimators=100, oob_score=True, random_state=42, n_jobs=1
             )
         else:
-            pred_classifier = LogisticRegression(random_state=42)
+            pred_classifier = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    ("lr", LogisticRegression(random_state=42, max_iter=1000)),
+                ]
+            )
 
         # Instantiate the invariance test
         try:

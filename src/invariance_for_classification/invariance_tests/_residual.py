@@ -6,6 +6,8 @@ from sklearn.base import clone
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from ._base import InvarianceTest
 
@@ -56,7 +58,12 @@ class InvariantResidualDistributionTest(InvarianceTest):
                 n_estimators=100, oob_score=True, random_state=42, n_jobs=1
             )
         elif test_classifier_type == "LR":
-            self.estimator = LogisticRegression(random_state=42, max_iter=100)
+            self.estimator = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    ("lr", LogisticRegression(random_state=42, max_iter=1000)),
+                ]
+            )
         elif test_classifier_type == "HGBT":
             self.estimator = HistGradientBoostingClassifier(random_state=42)
         else:

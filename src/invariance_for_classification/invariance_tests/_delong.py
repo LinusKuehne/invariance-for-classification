@@ -3,7 +3,8 @@ from scipy import stats
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold
-from sklearn.preprocessing import LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from ._base import InvarianceTest
 
@@ -192,16 +193,32 @@ class DeLongTest(InvarianceTest):
         kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=self.random_state)
 
         for train_idx, test_idx in kf.split(X_with_E):
-            # model with E
-            lr_with_E = LogisticRegression(
-                random_state=self.random_state, max_iter=1000
+            # model with E (use pipeline with scaling for convergence)
+            lr_with_E = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    (
+                        "lr",
+                        LogisticRegression(
+                            random_state=self.random_state, max_iter=1000
+                        ),
+                    ),
+                ]
             )
             lr_with_E.fit(X_with_E[train_idx], y[train_idx])
             preds_with_E[test_idx] = lr_with_E.predict_proba(X_with_E[test_idx])[:, 1]
 
             # model without E (permuted E)
-            lr_without_E = LogisticRegression(
-                random_state=self.random_state, max_iter=1000
+            lr_without_E = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    (
+                        "lr",
+                        LogisticRegression(
+                            random_state=self.random_state, max_iter=1000
+                        ),
+                    ),
+                ]
             )
             lr_without_E.fit(X_without_E[train_idx], y[train_idx])
             preds_without_E[test_idx] = lr_without_E.predict_proba(

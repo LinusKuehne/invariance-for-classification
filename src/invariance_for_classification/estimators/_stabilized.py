@@ -9,7 +9,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
 from sklearn.model_selection import cross_val_predict
-from sklearn.preprocessing import LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.utils import check_random_state, resample
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
@@ -257,7 +258,17 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 n_jobs=1,
             )
         elif self.pred_classifier_type == "LR":
-            pred_classifier = LogisticRegression(random_state=self.random_state)
+            pred_classifier = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    (
+                        "lr",
+                        LogisticRegression(
+                            random_state=self.random_state, max_iter=1000
+                        ),
+                    ),
+                ]
+            )
         else:
             raise ValueError(
                 f"Unknown pred_classifier_type: {self.pred_classifier_type}"
