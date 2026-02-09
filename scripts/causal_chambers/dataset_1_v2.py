@@ -104,7 +104,7 @@ SEED = 42
 SEED_TEST = SEED + 1000
 
 state_0 = 0
-state_1 = 45
+state_1 = 30
 
 
 def reference_setting(random_state, rng):
@@ -144,15 +144,14 @@ def reference_setting(random_state, rng):
 train_interventions = [
     {},
     {"t_ir_3": np.ones(N) * 2},
-    {"t_ir_3": np.ones(N) * 2},
     {
         "red": sample_truncnorm_integers(
-            N, mean=150, std=25, low=0, high=255, random_state=SEED + 1
+            N, mean=90, std=30, low=0, high=255, random_state=SEED + 1
         ),
     },
     {
         "green": sample_truncnorm_integers(
-            N, mean=120, std=25, low=0, high=255, random_state=SEED + 3
+            N, mean=64, std=25, low=0, high=255, random_state=SEED + 3
         ),
     },
     {
@@ -167,7 +166,7 @@ test_interventions = [
     {
         "t_ir_3": np.ones(N) * 0,
         "red": sample_truncnorm_integers(
-            N, mean=130, std=20, low=0, high=255, random_state=SEED_TEST + 1
+            N, mean=120, std=20, low=0, high=255, random_state=SEED_TEST + 1
         ),
     },
     {
@@ -192,7 +191,7 @@ test_interventions = [
             N, mean=80, std=30, low=0, high=255, random_state=SEED_TEST + 6
         ),
         "blue": sample_truncnorm_integers(
-            N, mean=60, std=20, low=0, high=255, random_state=SEED_TEST + 7
+            N, mean=100, std=20, low=0, high=255, random_state=SEED_TEST + 7
         ),
     },
 ]
@@ -203,7 +202,7 @@ all_interventions = {
 }
 
 
-dataset_name = "data/2_original"
+dataset_name = "data/1_v2"
 
 
 produce_dataset(dataset_type="train")

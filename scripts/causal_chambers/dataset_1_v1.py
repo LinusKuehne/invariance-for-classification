@@ -1,4 +1,11 @@
 """
+Causal chambers parameters
+--------------------------
+- t_ir_3  : [0,1,2,3], default 3   (integration time of IR sensor 3)
+- diode_ir_3 : [0,1,2], default 2  (IR diode setting)
+- pol_1   : [-270, 270], default 0  (polariser angle → determines Y)
+- red/green/blue : [0, 255]         (LED colour inputs)
+
 Stable blanket: {red, green, blue, vis_3}.
 """
 
@@ -97,7 +104,7 @@ SEED = 42
 SEED_TEST = SEED + 1000
 
 state_0 = 0
-state_1 = 35
+state_1 = 40
 
 
 def reference_setting(random_state, rng):
@@ -107,24 +114,24 @@ def reference_setting(random_state, rng):
         ),
         "red": sample_truncnorm_integers(
             N,
-            mean=100,
-            std=25,
+            mean=64,
+            std=20,
             low=0,
             high=255,
             random_state=random_state + 11,
         ),
         "green": sample_truncnorm_integers(
             N,
-            mean=80,
-            std=20,
+            mean=32,
+            std=30,
             low=0,
             high=255,
             random_state=random_state + 12,
         ),
         "blue": sample_truncnorm_integers(
             N,
-            mean=110,
-            std=15,
+            mean=90,
+            std=12,
             low=0,
             high=255,
             random_state=random_state + 13,
@@ -135,80 +142,57 @@ def reference_setting(random_state, rng):
 
 
 train_interventions = [
-    # Env 0 – reference (t_ir_3=3 default, bright colours)
     {},
-    # Env 1 – mild IR shift → invariance-test signal for ir_3
     {"t_ir_3": np.ones(N) * 2},
-    # Env 2 – mild IR shift + colour shift → extra invariance power (from original)
-    {
-        "t_ir_3": np.ones(N) * 2,
-        "red": sample_truncnorm_integers(
-            N, mean=130, std=20, low=0, high=255, random_state=SEED + 1
-        ),
-    },
-    # Env 3 – brighter red
+    {"t_ir_3": np.ones(N) * 2},
     {
         "red": sample_truncnorm_integers(
-            N, mean=140, std=20, low=0, high=255, random_state=SEED + 2
+            N, mean=150, std=25, low=0, high=255, random_state=SEED + 1
         ),
     },
-    # Env 4 – brighter green, dimmer blue
     {
         "green": sample_truncnorm_integers(
             N, mean=120, std=25, low=0, high=255, random_state=SEED + 3
         ),
-        "blue": sample_truncnorm_integers(
-            N, mean=70, std=20, low=0, high=255, random_state=SEED + 4
-        ),
     },
-    # Env 5 – dimmer red, brighter blue
     {
-        "red": sample_truncnorm_integers(
-            N, mean=60, std=20, low=0, high=255, random_state=SEED + 5
-        ),
         "blue": sample_truncnorm_integers(
-            N, mean=150, std=20, low=0, high=255, random_state=SEED + 6
+            N, mean=40, std=20, low=0, high=255, random_state=SEED + 4
         ),
     },
 ]
 
 test_interventions = [
-    # Env 0 – IR shift only (reference colours)
+    {"t_ir_3": np.ones(N) * 1, "diode_ir_3": np.ones(N) * 0},
     {
-        "t_ir_3": np.ones(N) * 1,
-    },
-    # Env 1 – IR shift + red within training range
-    {
-        "t_ir_3": np.ones(N) * 1,
+        "t_ir_3": np.ones(N) * 0,
         "red": sample_truncnorm_integers(
-            N, mean=120, std=25, low=0, high=255, random_state=SEED_TEST + 1
+            N, mean=130, std=20, low=0, high=255, random_state=SEED_TEST + 1
         ),
     },
-    # Env 2 – IR shift + green within training range
     {
         "t_ir_3": np.ones(N) * 1,
         "green": sample_truncnorm_integers(
             N, mean=100, std=20, low=0, high=255, random_state=SEED_TEST + 3
         ),
     },
-    # Env 3 – IR shift + blue within training range
     {
-        "t_ir_3": np.ones(N) * 1,
+        "t_ir_3": np.ones(N) * 0,
         "blue": sample_truncnorm_integers(
-            N, mean=90, std=20, low=0, high=255, random_state=SEED_TEST + 4
+            N, mean=50, std=20, low=0, high=255, random_state=SEED_TEST + 4
         ),
     },
-    # Env 4 – IR shift + all colours shifted (still overlapping)
     {
         "t_ir_3": np.ones(N) * 1,
+        "diode_ir_3": np.ones(N) * 1,
         "red": sample_truncnorm_integers(
-            N, mean=110, std=25, low=0, high=255, random_state=SEED_TEST + 5
+            N, mean=90, std=25, low=0, high=255, random_state=SEED_TEST + 5
         ),
         "green": sample_truncnorm_integers(
-            N, mean=90, std=20, low=0, high=255, random_state=SEED_TEST + 6
+            N, mean=80, std=30, low=0, high=255, random_state=SEED_TEST + 6
         ),
         "blue": sample_truncnorm_integers(
-            N, mean=100, std=20, low=0, high=255, random_state=SEED_TEST + 7
+            N, mean=60, std=20, low=0, high=255, random_state=SEED_TEST + 7
         ),
     },
 ]
@@ -219,7 +203,7 @@ all_interventions = {
 }
 
 
-dataset_name = "data/2_v4"
+dataset_name = "data/1_v1"
 
 
 produce_dataset(dataset_type="train")

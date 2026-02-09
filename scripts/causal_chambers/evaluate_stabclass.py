@@ -40,16 +40,12 @@ from invariance_for_classification import StabilizedClassificationClassifier
 # It contains exactly those features whose relationship with Y is invariant
 # across environments and that are maximally predictive.
 STABLE_BLANKETS: dict[str, list[str]] = {
-    "1_small": ["red", "green", "blue", "vis_3"],
-    "1": ["red", "green", "blue", "vis_3"],
-    "2_original_small": ["red", "green", "blue", "vis_3"],
-    "2_original": ["red", "green", "blue", "vis_3"],
-    "2_v2_small": ["red", "green", "blue", "vis_3"],
-    "2_v2": ["red", "green", "blue", "vis_3"],
-    "2_v3_small": ["red", "green", "blue", "vis_3"],
-    "2_v3": ["red", "green", "blue", "vis_3"],
-    "2_v4_small": ["red", "green", "blue", "vis_3"],
-    "2_v4": ["red", "green", "blue", "vis_3"],
+    "1_v1_small": ["red", "green", "blue", "vis_3"],
+    "1_v1": ["red", "green", "blue", "vis_3"],
+    "1_v2_small": ["red", "green", "blue", "vis_3"],
+    "1_v2": ["red", "green", "blue", "vis_3"],
+    "1_v3_small": ["red", "green", "blue", "vis_3"],
+    "1_v3": ["red", "green", "blue", "vis_3"],
 }
 
 
