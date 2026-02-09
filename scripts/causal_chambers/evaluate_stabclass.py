@@ -46,6 +46,10 @@ STABLE_BLANKETS: dict[str, list[str]] = {
     "1_v2": ["red", "green", "blue", "vis_3"],
     "1_v3_small": ["red", "green", "blue", "vis_3"],
     "1_v3": ["red", "green", "blue", "vis_3"],
+    "5_v1_small": ["red", "green", "blue"],
+    "5_v1": ["red", "green", "blue"],
+    "5_v2_small": ["red", "green", "blue"],
+    "5_v2": ["red", "green", "blue"],
 }
 
 
