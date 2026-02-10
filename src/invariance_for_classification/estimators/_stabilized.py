@@ -5,7 +5,7 @@ from typing import Optional, cast
 import numpy as np
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
 from sklearn.model_selection import cross_val_predict
@@ -109,6 +109,90 @@ def _bootstrap_worker(seed, X, y, S_max, pred_classifier):
     return score
 
 
+def _vrex_ranking_worker(
+    subset,
+    X,
+    y,
+    environment,
+    pred_classifier,
+    vrex_ranking_fn,
+    vrex_classifier_type,
+    vrex_random_state,
+):
+    """Worker to compute vrex ranking score and fit prediction model for a subset."""
+    subset = list(subset)
+    X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
+
+    # compute vrex ranking score (invariance score)
+    inv_score = vrex_ranking_fn(
+        Y=y,
+        E=environment,
+        X_S=X_S,
+        classifier_type=vrex_classifier_type,
+        random_state=vrex_random_state,
+    )
+
+    # fit prediction model and compute predictiveness score
+    model = clone(pred_classifier)
+    score = None
+
+    if isinstance(model, RandomForestClassifier):
+        model.set_params(oob_score=True)
+        model = _fit_model_helper(X_S, y, model)
+        score = _compute_score_helper(model, X_S, y, use_oob=True)
+    else:
+        cv_proba = cross_val_predict(
+            clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
+        )
+        score = float(-log_loss(y, cv_proba, labels=[0, 1]))
+        model = _fit_model_helper(X_S, y, model)
+
+    stat = {
+        "subset": subset,
+        "inv_score": inv_score,
+        "score": score,
+        "model": model,
+    }
+
+    return subset, inv_score, stat
+
+
+def _vrex_ranking_inv_bootstrap_worker(
+    seed,
+    X,
+    y,
+    environment,
+    S_best,
+    vrex_ranking_fn,
+    vrex_classifier_type,
+    vrex_random_state,
+):
+    """Worker to bootstrap a single vrex ranking score for invariance cutoff."""
+    rng = np.random.RandomState(seed)
+    n_samples = X.shape[0]
+    indices = np.asarray(resample(np.arange(n_samples), replace=True, random_state=rng))
+
+    X_boot = X[indices]
+    y_boot = y[indices]
+    env_boot = environment[indices]
+
+    # need at least 2 environments for meaningful ranking
+    if len(np.unique(env_boot)) < 2:
+        return None
+
+    X_S_boot = X_boot[:, S_best] if len(S_best) > 0 else np.zeros((len(indices), 0))
+
+    score = vrex_ranking_fn(
+        Y=y_boot,
+        E=env_boot,
+        X_S=X_S_boot,
+        classifier_type=vrex_classifier_type,
+        random_state=vrex_random_state,
+    )
+
+    return score
+
+
 class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
     """Internal dummy classifier for the empty feature set (use mean of class 1)."""
 
@@ -148,8 +232,11 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
     Parameters
     ----------
     alpha_inv : float, default=0.05
-        significance level for the invariance test. Subsets with p-value >= alpha_inv
-        are considered invariant
+        For statistical invariance tests: significance level. Subsets with
+        p-value >= alpha_inv are considered invariant.
+        For vrex_ranking: quantile of the bootstrap distribution of the best
+        subset's invariance score used as the cutoff. Subsets with invariance
+        score >= this cutoff are kept.
 
     alpha_pred : float, default=0.05
         parameter controlling the predictive score cutoff (related to the quantile
@@ -157,17 +244,27 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
     pred_classifier_type : str, default="RF"
         Classifier type to use for making predictions.
-        "RF" for random forest, "LR" for logistic regression.
-        Only used if estimator is None.
+        "RF" for random forest, "LR" for logistic regression,
+        "HGBT" for histogram gradient boosting.
 
     test_classifier_type : str, default="RF"
         Classifier type to use for the invariance test.
-        "RF" for random forest, "LR" for logistic regression.
-        Only used if `invariance_test` is None.
+        "RF" for random forest, "LR" for logistic regression,
+        "HGBT" for histogram gradient boosting.
+        Passed to the invariance test's ``test_classifier_type`` parameter.
 
     invariance_test : str, default="inv_residual"
-        the invariance test to use
-        Defaults to InvariantResidualDistributionTest
+        The invariance test or ranking method to use. Options:
+        - "inv_residual": InvariantResidualDistributionTest
+        - "tram_gcm": TramGcmTest
+        - "wgcm": WGCMTest
+        - "delong": DeLongTest
+        - "vrex": VRExTest
+        - "inv_env_pred": InvariantEnvironmentPredictionTest
+        - "crt": ConditionalRandomizationTest
+        - "vrex_ranking": Uses VREx ranking (not a statistical test). Subsets
+          are ranked by their vrex invariance score and filtered using a
+          bootstrap-based cutoff instead of a p-value threshold.
 
     n_bootstrap : int, default=100
         number of bootstrap samples used to determine the predictive cutoff
@@ -269,62 +366,96 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                     ),
                 ]
             )
+        elif self.pred_classifier_type == "HGBT":
+            pred_classifier = HistGradientBoostingClassifier(
+                random_state=self.random_state,
+            )
         else:
             raise ValueError(
                 f"Unknown pred_classifier_type: {self.pred_classifier_type}"
             )
 
-        if self.invariance_test == "inv_residual":
-            from ..invariance_tests import InvariantResidualDistributionTest
-
-            inv_test = InvariantResidualDistributionTest(
-                test_classifier_type=self.test_classifier_type
+        if self.invariance_test == "vrex_ranking":
+            # VREx ranking path: rank subsets by invariance score + bootstrap cutoff
+            all_stats = self._find_ranked_subsets(
+                X, y_encoded, environment, self.n_features_in_, pred_classifier
             )
-        elif self.invariance_test == "tram_gcm":
-            from ..invariance_tests import TramGcmTest
 
-            inv_test = TramGcmTest(test_classifier_type=self.test_classifier_type)
-        elif self.invariance_test == "wgcm":
-            from ..invariance_tests import WGCMTest
-
-            inv_test = WGCMTest(use_categorical_loss=True)
-        elif self.invariance_test == "delong":
-            from ..invariance_tests import DeLongTest
-
-            inv_test = DeLongTest(test_classifier_type=self.test_classifier_type)
-        elif self.invariance_test == "vrex":
-            from ..invariance_tests import VRExTest
-
-            inv_test = VRExTest(test_classifier_type=self.test_classifier_type)
-        elif self.invariance_test == "inv_env_pred":
-            from ..invariance_tests import InvariantEnvironmentPredictionTest
-
-            inv_test = InvariantEnvironmentPredictionTest(
-                test_classifier_type=self.test_classifier_type
+            # compute invariance cutoff via bootstrap on best-ranked subset
+            inv_cutoff = self._compute_invariance_cutoff(
+                X, y_encoded, environment, all_stats
             )
-        elif self.invariance_test == "crt":
-            from ..invariance_tests import ConditionalRandomizationTest
 
-            inv_test = ConditionalRandomizationTest(
-                test_classifier_type=self.test_classifier_type
-            )
+            # filter by invariance cutoff
+            subset_stats = [s for s in all_stats if s["inv_score"] >= inv_cutoff]
+
+            # fallback if no subsets pass the invariance cutoff
+            if not subset_stats:
+                if self.verbose:
+                    logger.warning(
+                        "No subsets above invariance cutoff. "
+                        "Using subset with highest vrex ranking score."
+                    )
+                best = max(all_stats, key=lambda x: x["inv_score"])
+                subset_stats = [best]
         else:
-            raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
+            # statistical test path: use p-values for invariance filtering
+            if self.invariance_test == "inv_residual":
+                from ..invariance_tests import InvariantResidualDistributionTest
 
-        # 1. determine invariant subsets
-        subset_stats, all_p_values = self._find_invariant_subsets(
-            X, y_encoded, environment, self.n_features_in_, inv_test, pred_classifier
-        )
-
-        # fallback if no invariant subsets found
-        if not subset_stats:
-            if self.verbose:
-                logger.warning(
-                    "No invariant subsets found. Using subset with max p-value."
+                inv_test = InvariantResidualDistributionTest(
+                    test_classifier_type=self.test_classifier_type
                 )
-            subset_stats = self._apply_no_inv_fallback(
-                X, y_encoded, all_p_values, pred_classifier
+            elif self.invariance_test == "tram_gcm":
+                from ..invariance_tests import TramGcmTest
+
+                inv_test = TramGcmTest(test_classifier_type=self.test_classifier_type)
+            elif self.invariance_test == "wgcm":
+                from ..invariance_tests import WGCMTest
+
+                inv_test = WGCMTest(use_categorical_loss=True)
+            elif self.invariance_test == "delong":
+                from ..invariance_tests import DeLongTest
+
+                inv_test = DeLongTest(test_classifier_type=self.test_classifier_type)
+            elif self.invariance_test == "vrex":
+                from ..invariance_tests import VRExTest
+
+                inv_test = VRExTest(test_classifier_type=self.test_classifier_type)
+            elif self.invariance_test == "inv_env_pred":
+                from ..invariance_tests import InvariantEnvironmentPredictionTest
+
+                inv_test = InvariantEnvironmentPredictionTest(
+                    test_classifier_type=self.test_classifier_type
+                )
+            elif self.invariance_test == "crt":
+                from ..invariance_tests import ConditionalRandomizationTest
+
+                inv_test = ConditionalRandomizationTest(
+                    test_classifier_type=self.test_classifier_type
+                )
+            else:
+                raise ValueError(f"Unknown invariance_test: {self.invariance_test}")
+
+            # 1. determine invariant subsets
+            subset_stats, all_p_values = self._find_invariant_subsets(
+                X,
+                y_encoded,
+                environment,
+                self.n_features_in_,
+                inv_test,
+                pred_classifier,
             )
+
+            # fallback if no invariant subsets found
+            if not subset_stats:
+                if self.verbose:
+                    logger.warning(
+                        "No invariant subsets found. Using subset with max p-value."
+                    )
+                subset_stats = self._apply_no_inv_fallback(
+                    X, y_encoded, all_p_values, pred_classifier
+                )
 
         # 2. compute predictive cutoff via bootstrap
         cutoff = self._compute_cutoff(X, y_encoded, subset_stats, pred_classifier)
@@ -519,3 +650,84 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             return -np.inf
 
         return np.quantile(bootstrap_scores, self.alpha_pred)
+
+    def _find_ranked_subsets(self, X, y, environment, n_features, pred_classifier):
+        """Compute vrex ranking score and predictiveness for all feature subsets."""
+        from ..rankings import vrex_ranking
+
+        all_indices = range(n_features)
+        feature_subsets = chain.from_iterable(
+            combinations(all_indices, r) for r in range(0, n_features + 1)
+        )
+
+        vrex_clf_type = self.test_classifier_type
+        if vrex_clf_type not in ("RF", "HGBT"):
+            vrex_clf_type = "HGBT"  # vrex_ranking only supports RF and HGBT
+
+        results = cast(
+            list[tuple[list[int], float, dict]],
+            Parallel(n_jobs=self.n_jobs)(
+                delayed(_vrex_ranking_worker)(
+                    subset,
+                    X,
+                    y,
+                    environment,
+                    pred_classifier,
+                    vrex_ranking,
+                    vrex_clf_type,
+                    self.random_state,
+                )
+                for subset in feature_subsets
+            ),
+        )
+
+        all_stats = []
+        for subset, inv_score, stat in results:
+            all_stats.append(stat)
+            if self.verbose:
+                if self.verbose > 1:
+                    logger.debug(
+                        f"Subset {subset}: vrex_score={inv_score:.6f}, "
+                        f"pred_score={stat['score']:.4f}"
+                    )
+
+        return all_stats
+
+    def _compute_invariance_cutoff(self, X, y, environment, all_stats):
+        """Compute invariance cutoff via bootstrapping the best vrex-ranked subset."""
+        from ..rankings import vrex_ranking
+
+        if not all_stats:
+            return -np.inf
+
+        S_best = max(all_stats, key=lambda x: x["inv_score"])["subset"]
+
+        vrex_clf_type = self.test_classifier_type
+        if vrex_clf_type not in ("RF", "HGBT"):
+            vrex_clf_type = "HGBT"
+
+        seeds = self.random_state_.randint(
+            0, np.iinfo(np.int32).max, size=self.n_bootstrap
+        )
+
+        bootstrap_scores = Parallel(n_jobs=self.n_jobs)(
+            delayed(_vrex_ranking_inv_bootstrap_worker)(
+                seed,
+                X,
+                y,
+                environment,
+                S_best,
+                vrex_ranking,
+                vrex_clf_type,
+                self.random_state,
+            )
+            for seed in seeds
+        )
+
+        # filter None values (if bootstrap sample had < 2 environments)
+        bootstrap_scores = [s for s in bootstrap_scores if s is not None]
+
+        if not bootstrap_scores:
+            return -np.inf
+
+        return np.quantile(bootstrap_scores, self.alpha_inv)
