@@ -28,22 +28,63 @@ def _fit_model_helper(X: np.ndarray, y: np.ndarray, pred_classifier):
     return model
 
 
-def _compute_score_helper(
-    model, X: np.ndarray, y: np.ndarray, use_oob: bool = True
-) -> float:
-    """Compute BCE score (negative log loss)."""
-    if use_oob and hasattr(model, "oob_decision_function_"):
+def _aggregate_score(y, y_pred, environment, pred_scoring):
+    """Compute negative log-loss, either pooled or worst-case across environments."""
+    if pred_scoring == "pooled":
+        return float(-log_loss(y, y_pred, labels=[0, 1]))
+    elif pred_scoring == "worst_case":
+        env_scores = []
+        for e in np.unique(environment):
+            mask = environment == e
+            if len(np.unique(y[mask])) < 2:
+                continue
+            env_scores.append(float(-log_loss(y[mask], y_pred[mask], labels=[0, 1])))
+        return min(env_scores) if env_scores else -np.inf
+    else:
+        raise ValueError(f"Unknown pred_scoring: {pred_scoring}")
+
+
+def _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring="pooled"):
+    """Fit a model on all data and compute its out-of-sample predictiveness score.
+
+    Returns (model, score) where model is fitted on ALL data.
+    """
+    is_rf = isinstance(pred_classifier, RandomForestClassifier)
+
+    # get out-of-sample predictions and fitted model
+    if is_rf:
+        model = clone(pred_classifier)
+        model.set_params(oob_score=True)
+        model = _fit_model_helper(X_S, y, model)
         y_pred = model.oob_decision_function_
         if np.isnan(y_pred).any():
-            fallback = model.predict_proba(X)
+            fallback = model.predict_proba(X_S)
             y_pred = np.where(np.isnan(y_pred), fallback, y_pred)
     else:
-        y_pred = model.predict_proba(X)
+        y_pred = cross_val_predict(
+            clone(pred_classifier),
+            X_S,
+            y,
+            cv=5,
+            method="predict_proba",
+            n_jobs=1,
+        )
+        model = _fit_model_helper(X_S, y, pred_classifier)
 
-    return float(-log_loss(y, y_pred, labels=[0, 1]))
+    score = _aggregate_score(y, y_pred, environment, pred_scoring)
+    return model, score
 
 
-def _subset_worker(subset, X, y, environment, inv_test, pred_classifier, alpha_inv):
+def _subset_worker(
+    subset,
+    X,
+    y,
+    environment,
+    inv_test,
+    pred_classifier,
+    alpha_inv,
+    pred_scoring="pooled",
+):
     """Worker function to test a subset for invariance and fit model if successful."""
     subset = list(subset)
     X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
@@ -52,23 +93,9 @@ def _subset_worker(subset, X, y, environment, inv_test, pred_classifier, alpha_i
 
     stat = None
     if p_value >= alpha_inv:
-        # fit model
-        model = clone(pred_classifier)
-        score = None
-
-        if isinstance(model, RandomForestClassifier):
-            model.set_params(oob_score=True)
-            model = _fit_model_helper(X_S, y, model)
-            score = _compute_score_helper(model, X_S, y, use_oob=True)
-        else:
-            # use CV for score
-            cv_proba = cross_val_predict(
-                clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
-            )
-            score = float(-log_loss(y, cv_proba, labels=[0, 1]))
-
-            # fit the final model on all data
-            model = _fit_model_helper(X_S, y, model)
+        model, score = _fit_and_score(
+            X_S, y, environment, pred_classifier, pred_scoring
+        )
 
         stat = {
             "subset": subset,
@@ -80,7 +107,9 @@ def _subset_worker(subset, X, y, environment, inv_test, pred_classifier, alpha_i
     return subset, p_value, stat
 
 
-def _bootstrap_worker(seed, X, y, S_max, pred_classifier):
+def _bootstrap_worker(
+    seed, X, y, S_max, pred_classifier, pred_scoring="pooled", environment=None
+):
     """Worker function to compute a single bootstrap score."""
     rng = np.random.RandomState(seed)
     n_samples = X.shape[0]
@@ -90,23 +119,19 @@ def _bootstrap_worker(seed, X, y, S_max, pred_classifier):
     if len(oob_indices) == 0:
         return None
 
-    X_train, y_train = X[indices], y[indices]
-    X_test, y_test = X[oob_indices], y[oob_indices]
+    X_S_train = X[indices][:, S_max] if len(S_max) > 0 else np.zeros((len(indices), 0))
+    X_S_test = (
+        X[oob_indices][:, S_max] if len(S_max) > 0 else np.zeros((len(oob_indices), 0))
+    )
 
-    X_S_train = X_train[:, S_max] if len(S_max) > 0 else np.zeros((len(indices), 0))
-    X_S_test = X_test[:, S_max] if len(S_max) > 0 else np.zeros((len(oob_indices), 0))
-
-    # prepare model
     bs_model = clone(pred_classifier)
     if isinstance(bs_model, RandomForestClassifier):
         bs_model.set_params(oob_score=False)
+    bs_model = _fit_model_helper(X_S_train, y[indices], bs_model)
 
-    bs_model = _fit_model_helper(X_S_train, y_train, bs_model)
-
-    # predictiveness score (use_oob=False because we have explicit hold-out set)
-    score = _compute_score_helper(bs_model, X_S_test, y_test, use_oob=False)
-
-    return score
+    y_pred = bs_model.predict_proba(X_S_test)
+    env_oob = environment[oob_indices] if environment is not None else None
+    return _aggregate_score(y[oob_indices], y_pred, env_oob, pred_scoring)
 
 
 def _vrex_ranking_worker(
@@ -118,6 +143,7 @@ def _vrex_ranking_worker(
     vrex_ranking_fn,
     vrex_classifier_type,
     vrex_random_state,
+    pred_scoring="pooled",
 ):
     """Worker to compute vrex ranking score and fit prediction model for a subset."""
     subset = list(subset)
@@ -133,19 +159,7 @@ def _vrex_ranking_worker(
     )
 
     # fit prediction model and compute predictiveness score
-    model = clone(pred_classifier)
-    score = None
-
-    if isinstance(model, RandomForestClassifier):
-        model.set_params(oob_score=True)
-        model = _fit_model_helper(X_S, y, model)
-        score = _compute_score_helper(model, X_S, y, use_oob=True)
-    else:
-        cv_proba = cross_val_predict(
-            clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
-        )
-        score = float(-log_loss(y, cv_proba, labels=[0, 1]))
-        model = _fit_model_helper(X_S, y, model)
+    model, score = _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring)
 
     stat = {
         "subset": subset,
@@ -266,6 +280,14 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
           are ranked by their vrex invariance score and filtered using a
           bootstrap-based cutoff instead of a p-value threshold.
 
+    pred_scoring : str, default="pooled"
+        Strategy for computing the predictiveness score of invariant subsets.
+        - "pooled": Train and evaluate on pooled data across all training
+          environments (standard ERM). This is the default.
+        - "worst_case": Train on all environments pooled, but evaluate
+          per-environment and take the worst (maximum) risk across
+          environments.
+
     n_bootstrap : int, default=100
         number of bootstrap samples used to determine the predictive cutoff
 
@@ -283,6 +305,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         pred_classifier_type: str = "RF",
         test_classifier_type: str = "RF",
         invariance_test: str = "inv_residual",
+        pred_scoring: str = "pooled",
         n_bootstrap: int = 250,
         verbose: int = 0,
         random_state: Optional[int] = None,
@@ -293,6 +316,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self.pred_classifier_type = pred_classifier_type
         self.test_classifier_type = test_classifier_type
         self.invariance_test = invariance_test
+        self.pred_scoring = pred_scoring
         self.n_bootstrap = n_bootstrap
         self.verbose = verbose
         self.random_state = random_state
@@ -375,6 +399,12 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 f"Unknown pred_classifier_type: {self.pred_classifier_type}"
             )
 
+        if self.pred_scoring not in ("pooled", "worst_case"):
+            raise ValueError(
+                f"Unknown pred_scoring: {self.pred_scoring}. "
+                "Choose from 'pooled', 'worst_case'."
+            )
+
         if self.invariance_test == "vrex_ranking":
             # VREx ranking path: rank subsets by invariance score + bootstrap cutoff
             all_stats = self._find_ranked_subsets(
@@ -454,11 +484,13 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                         "No invariant subsets found. Using subset with max p-value."
                     )
                 subset_stats = self._apply_no_inv_fallback(
-                    X, y_encoded, all_p_values, pred_classifier
+                    X, y_encoded, environment, all_p_values, pred_classifier
                 )
 
         # 2. compute predictive cutoff via bootstrap
-        cutoff = self._compute_cutoff(X, y_encoded, subset_stats, pred_classifier)
+        cutoff = self._compute_cutoff(
+            X, y_encoded, environment, subset_stats, pred_classifier
+        )
 
         # 3. filter predictive subsets (ensemble members)
         self.active_subsets_ = [
@@ -578,6 +610,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                     inv_test,
                     pred_classifier,
                     self.alpha_inv,
+                    self.pred_scoring,
                 )
                 for subset in feature_subsets
             ),
@@ -599,23 +632,14 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
         return subset_stats, all_p_values
 
-    def _apply_no_inv_fallback(self, X, y, all_p_values, pred_classifier):
+    def _apply_no_inv_fallback(self, X, y, environment, all_p_values, pred_classifier):
         """Fallback to the subset with the highest p-value in case no invariant subsets found."""
         best_subset, max_p = max(all_p_values, key=lambda x: x[1])
         X_S = X[:, best_subset] if len(best_subset) > 0 else np.zeros((X.shape[0], 0))
 
-        model = clone(pred_classifier)
-        score = None
-        if isinstance(model, RandomForestClassifier):
-            model.set_params(oob_score=True)
-            model = _fit_model_helper(X_S, y, model)
-            score = _compute_score_helper(model, X_S, y, use_oob=True)
-        else:
-            cv_proba = cross_val_predict(
-                clone(model), X_S, y, cv=5, method="predict_proba", n_jobs=1
-            )
-            score = float(-log_loss(y, cv_proba, labels=[0, 1]))
-            model = _fit_model_helper(X_S, y, model)
+        model, score = _fit_and_score(
+            X_S, y, environment, pred_classifier, self.pred_scoring
+        )
 
         return [
             {
@@ -626,7 +650,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             }
         ]
 
-    def _compute_cutoff(self, X, y, subset_stats, pred_classifier):
+    def _compute_cutoff(self, X, y, environment, subset_stats, pred_classifier):
         """Compute the predictive cutoff score via bootstrapping the best subset."""
         if not subset_stats:
             return -np.inf
@@ -639,7 +663,9 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         )
 
         bootstrap_scores = Parallel(n_jobs=self.n_jobs)(
-            delayed(_bootstrap_worker)(seed, X, y, S_max, pred_classifier)
+            delayed(_bootstrap_worker)(
+                seed, X, y, S_max, pred_classifier, self.pred_scoring, environment
+            )
             for seed in seeds
         )
 
@@ -676,6 +702,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                     vrex_ranking,
                     vrex_clf_type,
                     self.random_state,
+                    self.pred_scoring,
                 )
                 for subset in feature_subsets
             ),

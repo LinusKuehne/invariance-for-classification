@@ -164,9 +164,10 @@ def evaluate_stabilized_classification(
     E_test: np.ndarray,
     n_jobs: int = 1,
     verbose: bool = False,
+    pred_scoring: str = "pooled",
 ) -> MethodResult:
     """Fit and evaluate Stabilized Classification."""
-    name = "StabClass"
+    name = f"StabClass ({pred_scoring})"
 
     clf = StabilizedClassificationClassifier(
         alpha_inv=0.05,
@@ -174,6 +175,7 @@ def evaluate_stabilized_classification(
         pred_classifier_type="RF",
         test_classifier_type="RF",
         invariance_test="tram_gcm",
+        pred_scoring=pred_scoring,
         n_bootstrap=250,
         verbose=1 if verbose else 0,
         n_jobs=n_jobs,
@@ -453,22 +455,24 @@ def main(dataset: str, n_jobs: int = 1, verbose: bool = True) -> pd.DataFrame:
     # evaluate all methods
     results: list[MethodResult] = []
 
-    # 1. Stabilized Classification (our method)
-    try:
-        results.append(
-            evaluate_stabilized_classification(
-                X_train,
-                y_train,
-                E_train,
-                X_test,
-                y_test,
-                E_test,
-                n_jobs=n_jobs,
-                verbose=verbose,
+    # 1. Stabilized Classification (our method) - all scoring strategies
+    for pred_scoring in ["pooled", "worst_case"]:
+        try:
+            results.append(
+                evaluate_stabilized_classification(
+                    X_train,
+                    y_train,
+                    E_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                    pred_scoring=pred_scoring,
+                )
             )
-        )
-    except Exception as e:
-        print(f"  StabClass failed: {e}")
+        except Exception as e:
+            print(f"  StabClass ({pred_scoring}) failed: {e}")
 
     # 2. IRM
     try:
