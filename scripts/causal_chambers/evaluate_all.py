@@ -173,7 +173,7 @@ def evaluate_stabilized_classification(
         alpha_pred=0.05,
         pred_classifier_type="RF",
         test_classifier_type="RF",
-        invariance_test="wgcm",
+        invariance_test="tram_gcm",
         n_bootstrap=250,
         verbose=1 if verbose else 0,
         n_jobs=n_jobs,
@@ -418,7 +418,7 @@ def evaluate_icp_rf(
 def main(dataset: str, n_jobs: int = 1, verbose: bool = True) -> pd.DataFrame:
     """Run evaluation on a dataset and return summary DataFrame."""
     print("=" * 70)
-    print("UNIFIED EVALUATION  -  Multiple Methods")
+    print("Evaluation of multiple methods")
     print("=" * 70)
 
     # load data
