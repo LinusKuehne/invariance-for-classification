@@ -1,27 +1,23 @@
 """
-V-REx-inspired Invariance Ranking (LOEO Regret approach).
+LOEO (Leave-One-Environment-Out) Regret Ranking.
 
-This implements a ranking metric inspired by the Variance Risk Extrapolation (V-REx)
-concept using a Leave-One-Environment-Out (LOEO) regret approach.
+This implements a ranking metric using a Leave-One-Environment-Out (LOEO) regret approach.
 
 For each held-out environment e:
   1. Train a global model on all other environments → evaluate on e → global_loss_e
   2. Train individual models on each other env e' → evaluate on e → env_loss_e'
   3. regret_e = global_loss_e - mean(env_loss_e')
 
-Return -Var(regrets). Higher values (closer to 0) indicate "more invariant".
+Returns a dictionary with aggregate scores (mean and min of regrets).
+Higher values (closer to 0) indicate "more invariant".
 
 Intuition: If Y|X_S is truly invariant, a model pooling data from multiple
 environments should perform comparably to individual environment models when
-transferred to a new environment. The regret should be consistently small (low
-variance) across held-out environments.
+transferred to a new environment. The regret should be consistently small
+across held-out environments.
 
 The regret formulation normalises away base-rate differences across environments,
 making the ranking robust to datasets where P(Y=1) varies across environments.
-
-Inspired by the V-REx penalty idea from:
-Krueger et al. "Out-of-Distribution Generalization via Risk Extrapolation"
-https://arxiv.org/abs/2003.00688
 """
 
 from typing import Literal, Optional
@@ -29,7 +25,29 @@ from typing import Literal, Optional
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 
-from ..invariance_tests._vrex import _binary_cross_entropy
+
+def _binary_cross_entropy(
+    y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-15
+) -> np.ndarray:
+    """
+    Compute element-wise binary cross-entropy loss.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        True binary labels (0 or 1).
+    y_pred : np.ndarray
+        Predicted probabilities for class 1.
+    eps : float
+        Small constant for numerical stability.
+
+    Returns
+    -------
+    np.ndarray
+        Element-wise BCE loss values.
+    """
+    y_pred = np.clip(y_pred, eps, 1 - eps)
+    return -(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
 
 
 def _make_classifier(
@@ -90,17 +108,16 @@ def _mean_bce_loss(
     return float(np.mean(_binary_cross_entropy(y_test, preds)))
 
 
-def vrex_ranking(
+def loeo_regret(
     Y: np.ndarray,
     E: np.ndarray,
     X_S: np.ndarray,
     n_estimators: int = 100,
     random_state: Optional[int] = 42,
     classifier_type: Literal["RF", "HGBT"] = "HGBT",
-    n_folds: int = 5,
-) -> float:
+) -> dict[str, float]:
     """
-    Compute the V-REx-inspired invariance ranking score (LOEO regret variant).
+    Compute LOEO (Leave-One-Environment-Out) regret scores.
 
     Uses a Leave-One-Environment-Out scheme:
 
@@ -111,9 +128,13 @@ def vrex_ranking(
          *e'* alone and compute its mean BCE loss on *e* → ``env_loss_{e',e}``.
       3. ``regret_e = global_loss_e - mean(env_loss_{e',e}  for e' ≠ e)``
 
-    Return ``-Var(regrets)``.
+    Returns a dictionary containing aggregated scores based on the regrets:
+      - 'mean': Mean of regrets.
+      - 'min': Minimum of regrets.
 
-    Higher values (closer to 0) indicate more invariance.
+    Higher values (closer to 0) indicate more invariance. A very negative regret
+    means the global model performed much worse than environment-specific models
+    (indicating environment-specificity).
 
     Parameters
     ----------
@@ -129,22 +150,19 @@ def vrex_ranking(
         Random seed for reproducibility.
     classifier_type : {"RF", "HGBT"}, default="HGBT"
         Classifier type to use. HGBT is recommended for best performance.
-    n_folds : int, default=5
-        Unused. Kept for backward compatibility.
 
     Returns
     -------
-    float
-        Negative variance of LOEO regrets across environments.
-        Higher values (closer to 0) indicate more invariance.
-        Returns 0.0 for edge cases (single environment, insufficient data).
+    dict[str, float]
+        Dictionary with keys 'mean' and 'min'.
+        Returns {'mean': 0.0, 'min': 0.0} for edge cases (single environment).
     """
     unique_envs = np.unique(E)
     n_envs = len(unique_envs)
 
-    # single environment case: cannot compute variance, return 0.0
+    # single environment case: cannot compute regrets, return 0.0
     if n_envs < 2:
-        return 0.0
+        return {"mean": 0.0, "min": 0.0}
 
     Y = np.asarray(Y).astype(int)
     E = np.asarray(E)
@@ -192,8 +210,9 @@ def vrex_ranking(
 
     # check for NaN values (can happen with edge cases)
     if np.any(np.isnan(regrets_arr)):
-        return 0.0
+        return {"mean": 0.0, "min": 0.0}
 
-    # return negative variance of LOEO regrets
-    # higher values (less negative) indicate more invariance
-    return -float(np.var(regrets_arr))
+    return {
+        "mean": float(np.mean(regrets_arr)),
+        "min": float(np.min(regrets_arr)),
+    }

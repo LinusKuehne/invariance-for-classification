@@ -134,29 +134,30 @@ def _bootstrap_worker(
     return _aggregate_score(y[oob_indices], y_pred, env_oob, pred_scoring)
 
 
-def _vrex_ranking_worker(
+def _loeo_regret_worker(
     subset,
     X,
     y,
     environment,
     pred_classifier,
-    vrex_ranking_fn,
-    vrex_classifier_type,
-    vrex_random_state,
+    loeo_ranking_fn,
+    loeo_classifier_type,
+    loeo_random_state,
     pred_scoring="pooled",
 ):
-    """Worker to compute vrex ranking score and fit prediction model for a subset."""
+    """Worker to compute LOEO ranking score and fit prediction model for a subset."""
     subset = list(subset)
     X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
 
-    # compute vrex ranking score (invariance score)
-    inv_score = vrex_ranking_fn(
+    # compute LOEO ranking score (invariance score: using 'mean')
+    scores = loeo_ranking_fn(
         Y=y,
         E=environment,
         X_S=X_S,
-        classifier_type=vrex_classifier_type,
-        random_state=vrex_random_state,
+        classifier_type=loeo_classifier_type,
+        random_state=loeo_random_state,
     )
+    inv_score = scores["mean"]
 
     # fit prediction model and compute predictiveness score
     model, score = _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring)
@@ -171,17 +172,17 @@ def _vrex_ranking_worker(
     return subset, inv_score, stat
 
 
-def _vrex_ranking_inv_bootstrap_worker(
+def _loeo_regret_inv_bootstrap_worker(
     seed,
     X,
     y,
     environment,
     S_best,
-    vrex_ranking_fn,
-    vrex_classifier_type,
-    vrex_random_state,
+    loeo_ranking_fn,
+    loeo_classifier_type,
+    loeo_random_state,
 ):
-    """Worker to bootstrap a single vrex ranking score for invariance cutoff."""
+    """Worker to bootstrap a single LOEO ranking score for invariance cutoff."""
     rng = np.random.RandomState(seed)
     n_samples = X.shape[0]
     indices = np.asarray(resample(np.arange(n_samples), replace=True, random_state=rng))
@@ -196,15 +197,15 @@ def _vrex_ranking_inv_bootstrap_worker(
 
     X_S_boot = X_boot[:, S_best] if len(S_best) > 0 else np.zeros((len(indices), 0))
 
-    score = vrex_ranking_fn(
+    scores = loeo_ranking_fn(
         Y=y_boot,
         E=env_boot,
         X_S=X_S_boot,
-        classifier_type=vrex_classifier_type,
-        random_state=vrex_random_state,
+        classifier_type=loeo_classifier_type,
+        random_state=loeo_random_state,
     )
 
-    return score
+    return scores["mean"]
 
 
 class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
@@ -248,7 +249,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
     alpha_inv : float, default=0.05
         For statistical invariance tests: significance level. Subsets with
         p-value >= alpha_inv are considered invariant.
-        For vrex_ranking: quantile of the bootstrap distribution of the best
+        For LOEO-regret ranking: quantile of the bootstrap distribution of the best
         subset's invariance score used as the cutoff. Subsets with invariance
         score >= this cutoff are kept.
 
@@ -273,11 +274,10 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         - "tram_gcm": TramGcmTest
         - "wgcm": WGCMTest
         - "delong": DeLongTest
-        - "vrex": VRExTest
         - "inv_env_pred": InvariantEnvironmentPredictionTest
         - "crt": ConditionalRandomizationTest
-        - "vrex_ranking": Uses VREx ranking (not a statistical test). Subsets
-          are ranked by their vrex invariance score and filtered using a
+        - "loeo_regret": Uses LOEO regret ranking (not a statistical test). Subsets
+          are ranked by their LOEO regret score and filtered using a
           bootstrap-based cutoff instead of a p-value threshold.
 
     pred_scoring : str, default="pooled"
@@ -405,8 +405,8 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 "Choose from 'pooled', 'worst_case'."
             )
 
-        if self.invariance_test == "vrex_ranking":
-            # VREx ranking path: rank subsets by invariance score + bootstrap cutoff
+        if self.invariance_test == "loeo_regret":
+            # LOEO ranking path: rank subsets by invariance score + bootstrap cutoff
             all_stats = self._find_ranked_subsets(
                 X, y_encoded, environment, self.n_features_in_, pred_classifier
             )
@@ -424,7 +424,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 if self.verbose:
                     logger.warning(
                         "No subsets above invariance cutoff. "
-                        "Using subset with highest vrex ranking score."
+                        "Using subset with highest LOEO regret score."
                     )
                 best = max(all_stats, key=lambda x: x["inv_score"])
                 subset_stats = [best]
@@ -448,10 +448,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 from ..invariance_tests import DeLongTest
 
                 inv_test = DeLongTest(test_classifier_type=self.test_classifier_type)
-            elif self.invariance_test == "vrex":
-                from ..invariance_tests import VRExTest
-
-                inv_test = VRExTest(test_classifier_type=self.test_classifier_type)
             elif self.invariance_test == "inv_env_pred":
                 from ..invariance_tests import InvariantEnvironmentPredictionTest
 
@@ -678,29 +674,29 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         return np.quantile(bootstrap_scores, self.alpha_pred)
 
     def _find_ranked_subsets(self, X, y, environment, n_features, pred_classifier):
-        """Compute vrex ranking score and predictiveness for all feature subsets."""
-        from ..rankings import vrex_ranking
+        """Compute LOEO ranking score and predictiveness for all feature subsets."""
+        from ..rankings import loeo_regret
 
         all_indices = range(n_features)
         feature_subsets = chain.from_iterable(
             combinations(all_indices, r) for r in range(0, n_features + 1)
         )
 
-        vrex_clf_type = self.test_classifier_type
-        if vrex_clf_type not in ("RF", "HGBT"):
-            vrex_clf_type = "HGBT"  # vrex_ranking only supports RF and HGBT
+        loeo_clf_type = self.test_classifier_type
+        if loeo_clf_type not in ("RF", "HGBT"):
+            loeo_clf_type = "HGBT"
 
         results = cast(
             list[tuple[list[int], float, dict]],
             Parallel(n_jobs=self.n_jobs)(
-                delayed(_vrex_ranking_worker)(
+                delayed(_loeo_regret_worker)(
                     subset,
                     X,
                     y,
                     environment,
                     pred_classifier,
-                    vrex_ranking,
-                    vrex_clf_type,
+                    loeo_regret,
+                    loeo_clf_type,
                     self.random_state,
                     self.pred_scoring,
                 )
@@ -714,38 +710,38 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             if self.verbose:
                 if self.verbose > 1:
                     logger.debug(
-                        f"Subset {subset}: vrex_score={inv_score:.6f}, "
+                        f"Subset {subset}: loeo_score={inv_score:.6f}, "
                         f"pred_score={stat['score']:.4f}"
                     )
 
         return all_stats
 
     def _compute_invariance_cutoff(self, X, y, environment, all_stats):
-        """Compute invariance cutoff via bootstrapping the best vrex-ranked subset."""
-        from ..rankings import vrex_ranking
+        """Compute invariance cutoff via bootstrapping the best LOEO-ranked subset."""
+        from ..rankings import loeo_regret
 
         if not all_stats:
             return -np.inf
 
         S_best = max(all_stats, key=lambda x: x["inv_score"])["subset"]
 
-        vrex_clf_type = self.test_classifier_type
-        if vrex_clf_type not in ("RF", "HGBT"):
-            vrex_clf_type = "HGBT"
+        loeo_clf_type = self.test_classifier_type
+        if loeo_clf_type not in ("RF", "HGBT"):
+            loeo_clf_type = "HGBT"
 
         seeds = self.random_state_.randint(
             0, np.iinfo(np.int32).max, size=self.n_bootstrap
         )
 
         bootstrap_scores = Parallel(n_jobs=self.n_jobs)(
-            delayed(_vrex_ranking_inv_bootstrap_worker)(
+            delayed(_loeo_regret_inv_bootstrap_worker)(
                 seed,
                 X,
                 y,
                 environment,
                 S_best,
-                vrex_ranking,
-                vrex_clf_type,
+                loeo_regret,
+                loeo_clf_type,
                 self.random_state,
             )
             for seed in seeds

@@ -1,5 +1,5 @@
-from ._vrex_ranking import vrex_ranking
+from ._loeo_regret import loeo_regret
 
 __all__ = [
-    "vrex_ranking",
+    "loeo_regret",
 ]

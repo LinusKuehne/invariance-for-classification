@@ -6,7 +6,7 @@ This script:
 2. Performs diagnostics (pairplot, distribution analysis, correlation matrices)
 3. Computes p-values for all invariance tests on all 2^d subsets (parallelized)
 4. Evaluates test quality with plots and various metrics
-5. Additionally evaluates VREx ranking (scores instead of p-values)
+5. Additionally evaluates LOEO regret ranking (scores instead of p-values)
 
 ================================================================================
 COMMAND LINE FLAGS
@@ -42,13 +42,11 @@ COMMAND LINE FLAGS
       - TramGCM (HGBT)       - Tram-GCM test
       - TramGCM (LR)
       - TramGCM (RF)
-      - VREx (HGBT)          - V-REx inspired test
-      - VREx (RF)
       - WGCM_est (xgb)       - Weighted GCM (estimated weights)
       - WGCM_fix (xgb)       - Weighted GCM (fixed weights)
 
     Examples:
-        python evaluate_all_tests.py --dataset simple --tests residual tramgcm vrex
+        python evaluate_all_tests.py --dataset simple --tests residual tramgcm
         python evaluate_all_tests.py --dataset simple --tests crt  # runs all CRT variants
 
 ================================================================================
@@ -102,10 +100,9 @@ from invariance_for_classification.invariance_tests import (
     InvariantEnvironmentPredictionTest,
     InvariantResidualDistributionTest,
     TramGcmTest,
-    VRExTest,
     WGCMTest,
 )
-from invariance_for_classification.rankings import vrex_ranking
+from invariance_for_classification.rankings import loeo_regret
 
 # =============================================================================
 # Data Classes
@@ -132,7 +129,7 @@ class TestResult:
     subset: tuple[str, ...]
     subset_str: str
     is_invariant: bool
-    value: float  # p-value for tests, score for VREx ranking
+    value: float  # p-value for tests, score for LOEO regret ranking
 
 
 # =============================================================================
@@ -483,11 +480,7 @@ def get_all_tests(test_filter: list[str] | None = None) -> dict[str, Any]:
     for clf in ["HGBT", "LR", "RF"]:
         tests[f"TramGCM ({clf})"] = TramGcmTest(test_classifier_type=clf)
 
-    # VREx: supports RF, HGBT
-    for clf in ["HGBT", "RF"]:
-        tests[f"VREx ({clf})"] = VRExTest(test_classifier_type=clf)
-
-    # WGCM: uses xgboost internally, two methods: "est" and "fix"
+    # WGCM uses xgboost internally, two methods: "est" and "fix"
     # Uses default parameters
     tests["WGCM_est (xgb)"] = WGCMTest(method="est", beta=0.5)
     tests["WGCM_fix (xgb)"] = WGCMTest(method="fix")
@@ -544,14 +537,15 @@ def _compute_test_for_subset(
     )
 
 
-def _compute_vrex_ranking_for_subset(
+def _compute_loeo_regret_for_subset(
     subset: list[str],
     df: pd.DataFrame,
     invariant_subsets: set[frozenset[str]],
     classifier_type: Literal["RF", "HGBT"] = "RF",
-) -> TestResult:
+) -> list[TestResult]:
     """
-    Compute VREx ranking score for a single subset.
+    Compute LOEO regret scores for a single subset.
+    Returns two TestResult objects: one for 'mean' and one for 'min'.
     """
     y = df["Y"].to_numpy()
     E = df["E"].to_numpy()
@@ -562,23 +556,41 @@ def _compute_vrex_ranking_for_subset(
         X = df[subset].to_numpy()
 
     try:
-        score = vrex_ranking(y, E, X, classifier_type=classifier_type)
+        scores = loeo_regret(y, E, X, classifier_type=classifier_type)
     except Exception as e:
         print(
-            f"Warning: VREx ranking ({classifier_type}) failed on subset {subset}: {e}"
+            f"Warning: LOEO regret ({classifier_type}) failed on subset {subset}: {e}"
         )
-        score = np.nan
+        scores = {"mean": np.nan, "min": np.nan}
 
     subset_frozen = frozenset(subset)
     is_invariant = subset_frozen in invariant_subsets
+    subset_tuple = tuple(sorted(subset))
+    subset_string = subset_to_str(subset)
 
-    return TestResult(
-        test_name=f"VREx_Ranking ({classifier_type})",
-        subset=tuple(sorted(subset)),  # Store as sorted tuple for display
-        subset_str=subset_to_str(subset),
-        is_invariant=is_invariant,
-        value=score,
+    results = []
+    # Create result for mean
+    results.append(
+        TestResult(
+            test_name=f"LOEO_Regret ({classifier_type}, mean)",
+            subset=subset_tuple,
+            subset_str=subset_string,
+            is_invariant=is_invariant,
+            value=scores["mean"],
+        )
     )
+    # Create result for min
+    results.append(
+        TestResult(
+            test_name=f"LOEO_Regret ({classifier_type}, min)",
+            subset=subset_tuple,
+            subset_str=subset_string,
+            is_invariant=is_invariant,
+            value=scores["min"],
+        )
+    )
+
+    return results
 
 
 def _run_single_test(
@@ -662,17 +674,17 @@ def run_all_tests_parallel(
                 except Exception as e:
                     print(f"\nError in test {test_name}: {e}")
 
-    # Also run VREx ranking with both classifier types
-    print("\nRunning VREx ranking (RF and HGBT)...")
+    # Also run LOEO regret ranking with both classifier types
+    print("\nRunning LOEO Regret ranking (RF and HGBT)...")
     for clf_type in ["HGBT", "RF"]:
-        for subset in tqdm(data.all_subsets, desc=f"VREx_Ranking ({clf_type})"):
-            result = _compute_vrex_ranking_for_subset(
+        for subset in tqdm(data.all_subsets, desc=f"LOEO_Regret ({clf_type})"):
+            results = _compute_loeo_regret_for_subset(
                 subset,
                 data.df,
                 data.invariant_subsets,
                 classifier_type=clf_type,  # pyright: ignore[reportArgumentType]
             )
-            all_results.append(result)
+            all_results.extend(results)
 
     # Convert to DataFrame
     df_results = pd.DataFrame(
@@ -756,9 +768,9 @@ def compute_metrics(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
         if len(inv_values) == 0 or len(noninv_values) == 0:
             continue
 
-        # For VREx ranking, higher is better (more invariant)
+        # For LOEO regret ranking, higher is better (more invariant)
         # For p-value tests, higher p-value means more invariant
-        is_ranking_test = test_name.startswith("VREx_Ranking")
+        is_ranking_test = test_name.startswith("LOEO_Regret")
 
         # Pairwise AUC: fraction of (inv, noninv) pairs where inv ranks higher
         auc = _pairwise_auc(inv_values.values, noninv_values.values)
@@ -797,7 +809,6 @@ def compute_metrics(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
                 }
             )
         else:
-            # VREx ranking: higher score = more invariant
             avg_score_inv = inv_values.mean()
             avg_score_noninv = noninv_values.mean()
 
@@ -832,9 +843,9 @@ def print_metrics_summary(metrics_df: pd.DataFrame, alpha: float = 0.05) -> None
 
     # Separate p-value tests from ranking
     pval_tests = metrics_df[
-        ~metrics_df["test_name"].str.startswith("VREx_Ranking")
+        ~metrics_df["test_name"].str.startswith("LOEO_Regret")
     ].copy()
-    ranking = metrics_df[metrics_df["test_name"].str.startswith("VREx_Ranking")].copy()
+    ranking = metrics_df[metrics_df["test_name"].str.startswith("LOEO_Regret")].copy()
 
     if len(pval_tests) > 0:
         print("\n--- P-Value Tests ---")
@@ -874,7 +885,7 @@ def print_metrics_summary(metrics_df: pd.DataFrame, alpha: float = 0.05) -> None
         )
 
     if len(ranking) > 0:
-        print("\n--- VREx Ranking ---")
+        print("\n--- LOEO Regret Ranking ---")
         for _, row in ranking.iterrows():
             print(f"\n{row['test_name']}:")
             print(f"  Avg Score (invariant):     {row['avg_value_inv']:.6f}")
@@ -899,9 +910,9 @@ def plot_ordered_values(
 
     Green = invariant sets, Red = non-invariant sets.
     """
-    # Separate p-value tests from VREx ranking
-    pval_df = df[~df["test_name"].str.startswith("VREx_Ranking")]
-    ranking_df = df[df["test_name"].str.startswith("VREx_Ranking")]
+    # Separate p-value tests from LOEO ranking
+    pval_df = df[~df["test_name"].str.startswith("LOEO_Regret")]
+    ranking_df = df[df["test_name"].str.startswith("LOEO_Regret")]
 
     # Get unique test names (sorted)
     pval_tests = sorted(pval_df["test_name"].unique())
@@ -954,7 +965,7 @@ def plot_ordered_values(
 
         ax_idx += 1
 
-    # Plot VREx ranking tests
+    # Plot LOEO ranking tests
     for test_name in ranking_tests:
         ax = axes[ax_idx]
         ranking_data = ranking_df[ranking_df["test_name"] == test_name].copy()
@@ -1028,7 +1039,7 @@ def plot_comparison_summary(
     """
     # Filter to p-value tests only
     pval_metrics = metrics_df[
-        ~metrics_df["test_name"].str.startswith("VREx_Ranking")
+        ~metrics_df["test_name"].str.startswith("LOEO_Regret")
     ].copy()
 
     if len(pval_metrics) == 0:
@@ -1114,7 +1125,7 @@ def plot_comparison_summary(
     all_names = all_metrics["test_name"].tolist()
     x_all = np.arange(len(all_names))
     bar_colors = [
-        "mediumpurple" if name.startswith("VREx_Ranking") else "steelblue"
+        "mediumpurple" if name.startswith("LOEO_Regret") else "steelblue"
         for name in all_names
     ]
     ax.bar(x_all, all_metrics["pairwise_auc"], color=bar_colors, alpha=0.8)
