@@ -182,7 +182,7 @@ def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]
             frozenset({"X1", "X3"}),
         }
 
-    if name in ["1_v1_small_train.csv", "1_v2_small_train.csv", "1_v3_small_train.csv"]:
+    if name in ["1a_small_train.csv", "1b_small_train.csv"]:
         return {
             frozenset(),  # empty set
             frozenset({"red"}),
@@ -195,7 +195,7 @@ def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]
             frozenset({"red", "green", "blue", "vis_3"}),
         }
 
-    if name in ["1_v1_train.csv", "1_v2_train.csv", "1_v3_train.csv"]:
+    if name in ["1a_train.csv", "1b_train.csv"]:
         # Same as dataset_1_small, but each subset can optionally include ir_1 and/or vis_1
         base_subsets = [
             frozenset(),  # empty set
@@ -221,12 +221,12 @@ def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]
                 invariant_subsets.add(base | addition)
         return invariant_subsets
 
-    if name in ["5_v1_small_train.csv", "5_v2_small_train.csv"]:
+    if name in ["2_small_train.csv"]:
         return {
             frozenset({"red", "green", "blue"}),
         }
 
-    if name in ["5_v1_train.csv", "5_v2_train.csv"]:
+    if name in ["2_train.csv"]:
         return {
             frozenset({"red", "green", "blue"}),
             frozenset({"red", "green", "blue", "vis_1"}),

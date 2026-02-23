@@ -8,11 +8,13 @@ Compares:
   4. ERM Neural Network
   5. Random Forest (pooled)
   6. Random Forest on Stable Blanket (oracle)
-  7. ICP-glm (Invariant Causal Prediction, logistic regression)
-  8. ICP-rf (Invariant Causal Prediction, random forest)
+  7. Logistic Regression (pooled)
+  8. Logistic Regression on Stable Blanket (oracle)
+  9. ICP-glm (Invariant Causal Prediction, logistic regression)
+  10. ICP-rf (Invariant Causal Prediction, random forest)
 
-usage:
-    python evaluate_all.py --dataset 1_v2 --n-jobs 10
+Example:
+    python evaluate_all.py --dataset 1a --n-jobs 10 --methods stabclass irm irm2 vrex erm_nn rf_pooled rf_oracle logreg_pooled logreg_oracle icp_glm icp_rf --quiet
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, log_loss
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +36,7 @@ from baselines import (
     ERMClassifier,
     ICPglmClassifier,
     ICPrfClassifier,
+    IRM2Classifier,
     IRMClassifier,
     VRExClassifier,
 )
@@ -40,20 +44,22 @@ from baselines import (
 from invariance_for_classification import StabilizedClassificationClassifier
 
 # ──────────────────────────────────────────────────────────────────────────────
+# global settings
+# ──────────────────────────────────────────────────────────────────────────────
+
+N_OBS_PER_ENV = 500  # cap training observations per environment
+
+# ──────────────────────────────────────────────────────────────────────────────
 # stable blanket definitions (ground truth for oracle comparison)
 # ──────────────────────────────────────────────────────────────────────────────
 
 STABLE_BLANKETS: dict[str, list[str]] = {
-    "1_v1_small": ["red", "green", "blue", "vis_3"],
-    "1_v1": ["red", "green", "blue", "vis_3"],
-    "1_v2_small": ["red", "green", "blue", "vis_3"],
-    "1_v2": ["red", "green", "blue", "vis_3"],
-    "1_v3_small": ["red", "green", "blue", "vis_3"],
-    "1_v3": ["red", "green", "blue", "vis_3"],
-    "5_v1_small": ["red", "green", "blue"],
-    "5_v1": ["red", "green", "blue"],
-    "5_v2_small": ["red", "green", "blue"],
-    "5_v2": ["red", "green", "blue"],
+    "1a_small": ["red", "green", "blue", "vis_3"],
+    "1a": ["red", "green", "blue", "vis_3"],
+    "1b_small": ["red", "green", "blue", "vis_3"],
+    "1b": ["red", "green", "blue", "vis_3"],
+    "2_small": ["red", "green", "blue"],
+    "2": ["red", "green", "blue"],
 }
 
 
@@ -350,6 +356,69 @@ def evaluate_random_forest_oracle(
     )
 
 
+def evaluate_logistic_regression(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    E_test: np.ndarray,
+    n_jobs: int = 1,
+    verbose: bool = False,
+) -> MethodResult:
+    """Fit and evaluate pooled Logistic Regression (ignores environments)."""
+    name = "LogReg (pooled)"
+    clf = LogisticRegression(max_iter=1000, random_state=42)
+
+    clf.fit(X_train, y_train)
+
+    y_prob = _extract_positive_proba(clf.predict_proba(X_test))
+    y_pred = clf.predict(X_test)
+
+    per_env = _per_env_metrics(y_test, y_prob, y_pred, E_test)
+    if verbose:
+        _print_per_env(name, per_env)
+
+    return MethodResult(
+        name=name,
+        per_env=per_env,
+        summary=_summary_row(per_env, name),
+    )
+
+
+def evaluate_logistic_regression_oracle(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    E_test: np.ndarray,
+    stable_blanket_indices: list[int],
+    n_jobs: int = 1,
+    verbose: bool = False,
+) -> MethodResult:
+    """Fit and evaluate Logistic Regression on stable blanket (oracle)."""
+    name = "LogReg (oracle)"
+
+    X_train_sb = X_train[:, stable_blanket_indices]
+    X_test_sb = X_test[:, stable_blanket_indices]
+
+    clf = LogisticRegression(max_iter=1000, random_state=42)
+
+    clf.fit(X_train_sb, y_train)
+
+    y_prob = _extract_positive_proba(clf.predict_proba(X_test_sb))
+    y_pred = clf.predict(X_test_sb)
+
+    per_env = _per_env_metrics(y_test, y_prob, y_pred, E_test)
+    if verbose:
+        _print_per_env(name, per_env)
+
+    return MethodResult(
+        name=name,
+        per_env=per_env,
+        summary=_summary_row(per_env, name),
+    )
+
+
 def evaluate_icp_glm(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -412,19 +481,69 @@ def evaluate_icp_rf(
     )
 
 
+def evaluate_irm2(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    E_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    E_test: np.ndarray,
+    n_jobs: int = 1,
+    verbose: bool = False,
+) -> MethodResult:
+    """Fit and evaluate IRM 2 (InvarianceUnitTests-style)."""
+    name = "IRM 2"
+    clf = IRM2Classifier(n_jobs=n_jobs, verbose=verbose)
+
+    clf.fit(X_train, y_train, environment=E_train)
+
+    y_prob = _extract_positive_proba(clf.predict_proba(X_test))
+    y_pred = clf.predict(X_test)
+
+    per_env = _per_env_metrics(y_test, y_prob, y_pred, E_test)
+    if verbose:
+        _print_per_env(name, per_env)
+
+    return MethodResult(
+        name=name,
+        per_env=per_env,
+        summary=_summary_row(per_env, name),
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # main
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def main(dataset: str, n_jobs: int = 1, verbose: bool = True) -> pd.DataFrame:
-    """Run evaluation on a dataset and return summary DataFrame."""
+def main(
+    dataset: str,
+    n_jobs: int = 1,
+    verbose: bool = True,
+    methods: list[str] | None = None,
+) -> pd.DataFrame:
+    """Run evaluation on a dataset and return summary DataFrame.
+
+    Parameters
+    ----------
+    methods : list of str or None
+        Which methods to run. If None, all methods are run.
+        Valid names: stabclass, irm, irm2, vrex, erm_nn,
+                     rf_pooled, rf_oracle, logreg_pooled,
+                     logreg_oracle, icp_glm, icp_rf.
+    """
     print("=" * 70)
     print("Evaluation of multiple methods")
     print("=" * 70)
 
     # load data
     df_train, df_test = _load_train_test(dataset)
+
+    # cap training observations per environment
+    df_train = df_train.groupby("E").head(N_OBS_PER_ENV).reset_index(drop=True)
+
+    print(df_train.shape)
+
     features = [c for c in df_train.columns if c not in ("Y", "E")]
 
     print(f"\nDataset        : {dataset}")
@@ -452,14 +571,56 @@ def main(dataset: str, n_jobs: int = 1, verbose: bool = True) -> pd.DataFrame:
     else:
         print("Stable blanket : (unknown)")
 
-    # evaluate all methods
+    # ── which methods to run? ──────────────────────────────────────────
+    ALL_METHODS = [
+        "stabclass",
+        "irm",
+        "irm2",
+        "vrex",
+        "erm_nn",
+        "rf_pooled",
+        "rf_oracle",
+        "logreg_pooled",
+        "logreg_oracle",
+        "icp_glm",
+        "icp_rf",
+    ]
+    run_methods = set(methods if methods is not None else ALL_METHODS)
+    unknown = run_methods - set(ALL_METHODS)
+    if unknown:
+        print(f"Warning: unknown methods ignored: {unknown}")
+        run_methods -= unknown
+
+    # evaluate selected methods
     results: list[MethodResult] = []
 
     # 1. Stabilized Classification (our method) - all scoring strategies
-    for pred_scoring in ["pooled", "worst_case"]:
+    if "stabclass" not in run_methods:
+        pass
+    else:
+        for pred_scoring in ["pooled", "worst_case"]:
+            try:
+                results.append(
+                    evaluate_stabilized_classification(
+                        X_train,
+                        y_train,
+                        E_train,
+                        X_test,
+                        y_test,
+                        E_test,
+                        n_jobs=n_jobs,
+                        verbose=verbose,
+                        pred_scoring=pred_scoring,
+                    )
+                )
+            except Exception as e:
+                print(f"  StabClass ({pred_scoring}) failed: {e}")
+
+    # 2. IRM
+    if "irm" in run_methods:
         try:
             results.append(
-                evaluate_stabilized_classification(
+                evaluate_irm(
                     X_train,
                     y_train,
                     E_train,
@@ -468,81 +629,88 @@ def main(dataset: str, n_jobs: int = 1, verbose: bool = True) -> pd.DataFrame:
                     E_test,
                     n_jobs=n_jobs,
                     verbose=verbose,
-                    pred_scoring=pred_scoring,
                 )
             )
         except Exception as e:
-            print(f"  StabClass ({pred_scoring}) failed: {e}")
+            print(f"  IRM failed: {e}")
 
-    # 2. IRM
-    try:
-        results.append(
-            evaluate_irm(
-                X_train,
-                y_train,
-                E_train,
-                X_test,
-                y_test,
-                E_test,
-                n_jobs=n_jobs,
-                verbose=verbose,
+    # 2b. IRM 2 (InvarianceUnitTests-style)
+    if "irm2" in run_methods:
+        try:
+            results.append(
+                evaluate_irm2(
+                    X_train,
+                    y_train,
+                    E_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
             )
-        )
-    except Exception as e:
-        print(f"  IRM failed: {e}")
+        except Exception as e:
+            print(f"  IRM 2 failed: {e}")
 
     # 3. V-REx
-    try:
-        results.append(
-            evaluate_vrex(
-                X_train,
-                y_train,
-                E_train,
-                X_test,
-                y_test,
-                E_test,
-                n_jobs=n_jobs,
-                verbose=verbose,
+    if "vrex" in run_methods:
+        try:
+            results.append(
+                evaluate_vrex(
+                    X_train,
+                    y_train,
+                    E_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
             )
-        )
-    except Exception as e:
-        print(f"  V-REx failed: {e}")
+        except Exception as e:
+            print(f"  V-REx failed: {e}")
 
     # 4. ERM (NN)
-    try:
-        results.append(
-            evaluate_erm_nn(
-                X_train,
-                y_train,
-                E_train,
-                X_test,
-                y_test,
-                E_test,
-                n_jobs=n_jobs,
-                verbose=verbose,
+    if "erm_nn" in run_methods:
+        try:
+            results.append(
+                evaluate_erm_nn(
+                    X_train,
+                    y_train,
+                    E_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
             )
-        )
-    except Exception as e:
-        print(f"  ERM (NN) failed: {e}")
+        except Exception as e:
+            print(f"  ERM (NN) failed: {e}")
 
     # 5. Random Forest (pooled)
-    try:
-        results.append(
-            evaluate_random_forest(
-                X_train,
-                y_train,
-                X_test,
-                y_test,
-                E_test,
-                n_jobs=n_jobs,
-                verbose=verbose,
+    if "rf_pooled" in run_methods:
+        try:
+            results.append(
+                evaluate_random_forest(
+                    X_train,
+                    y_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
             )
-        )
-    except Exception as e:
-        print(f"  RF (pooled) failed: {e}")
+        except Exception as e:
+            print(f"  RF (pooled) failed: {e}")
 
     # 6. Random Forest on stable blanket (oracle)
-    if stable_blanket_indices is not None and len(stable_blanket_indices) > 0:
+    if (
+        "rf_oracle" in run_methods
+        and stable_blanket_indices is not None
+        and len(stable_blanket_indices) > 0
+    ):
         try:
             results.append(
                 evaluate_random_forest_oracle(
@@ -559,39 +727,80 @@ def main(dataset: str, n_jobs: int = 1, verbose: bool = True) -> pd.DataFrame:
         except Exception as e:
             print(f"  RF (oracle) failed: {e}")
 
-    # 7. ICP (glm) - logistic regression-based
-    try:
-        results.append(
-            evaluate_icp_glm(
-                X_train,
-                y_train,
-                E_train,
-                X_test,
-                y_test,
-                E_test,
-                n_jobs=n_jobs,
-                verbose=verbose,
+    # 7. Logistic Regression (pooled)
+    if "logreg_pooled" in run_methods:
+        try:
+            results.append(
+                evaluate_logistic_regression(
+                    X_train,
+                    y_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
             )
-        )
-    except Exception as e:
-        print(f"  ICP (glm) failed: {e}")
+        except Exception as e:
+            print(f"  LogReg (pooled) failed: {e}")
 
-    # 8. ICP (rf) - random forest-based
-    try:
-        results.append(
-            evaluate_icp_rf(
-                X_train,
-                y_train,
-                E_train,
-                X_test,
-                y_test,
-                E_test,
-                n_jobs=n_jobs,
-                verbose=verbose,
+    # 8. Logistic Regression on stable blanket (oracle)
+    if (
+        "logreg_oracle" in run_methods
+        and stable_blanket_indices is not None
+        and len(stable_blanket_indices) > 0
+    ):
+        try:
+            results.append(
+                evaluate_logistic_regression_oracle(
+                    X_train,
+                    y_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    stable_blanket_indices=stable_blanket_indices,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
             )
-        )
-    except Exception as e:
-        print(f"  ICP (rf) failed: {e}")
+        except Exception as e:
+            print(f"  LogReg (oracle) failed: {e}")
+
+    # 9. ICP (glm) - logistic regression-based
+    if "icp_glm" in run_methods:
+        try:
+            results.append(
+                evaluate_icp_glm(
+                    X_train,
+                    y_train,
+                    E_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
+            )
+        except Exception as e:
+            print(f"  ICP (glm) failed: {e}")
+
+    # 10. ICP (rf) - random forest-based
+    if "icp_rf" in run_methods:
+        try:
+            results.append(
+                evaluate_icp_rf(
+                    X_train,
+                    y_train,
+                    E_train,
+                    X_test,
+                    y_test,
+                    E_test,
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                )
+            )
+        except Exception as e:
+            print(f"  ICP (rf) failed: {e}")
 
     summaries = [r.summary for r in results]
     summary_df = pd.DataFrame(summaries)
@@ -631,8 +840,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="1_v2",
-        help="Dataset base name, e.g. '1_v2'",
+        default="1a",
+        help="Dataset base name, e.g. '1a'",
     )
     parser.add_argument(
         "--n-jobs",
@@ -645,5 +854,21 @@ if __name__ == "__main__":
         action="store_true",
         help="Suppress per-method verbose output.",
     )
+    parser.add_argument(
+        "--methods",
+        nargs="+",
+        default=None,
+        help=(
+            "Which methods to run (default: all). "
+            "Choices: stabclass, irm, irm2, vrex, erm_nn, "
+            "rf_pooled, rf_oracle, logreg_pooled, logreg_oracle, "
+            "icp_glm, icp_rf."
+        ),
+    )
     args = parser.parse_args()
-    main(dataset=args.dataset, n_jobs=args.n_jobs, verbose=not args.quiet)
+    main(
+        dataset=args.dataset,
+        n_jobs=args.n_jobs,
+        verbose=not args.quiet,
+        methods=args.methods,
+    )
