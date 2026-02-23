@@ -1,5 +1,5 @@
 """
-Dataset 5
+Dataset 2
 ---------
 Two-stage data generation process with feedback loop.
 1. Generate R/G/B -> Measure ir_1 -> Compute Y
@@ -30,8 +30,10 @@ def sample_truncnorm_integers(n, mean, std, low, high, random_state=None):
 def produce_dataset(dataset_type="train"):
     if dataset_type == "train":
         seed = SEED
+        n = N_TRAIN
     else:
         seed = SEED_TEST
+        n = N_TEST
 
     interventions = []
     env_indices = []
@@ -47,7 +49,7 @@ def produce_dataset(dataset_type="train"):
     print(f"Submitting Phase 1 experiments ({dataset_type})...")
     for i, intervention in enumerate(interventions):
         # Base inputs
-        inputs = reference_setting(seed + i)
+        inputs = reference_setting(seed + i, n)
 
         # Apply interventions (excluding feedback params which are used in phase 2)
         feedback_keys = {"coef_led", "coef_pol", "base_led", "base_pol"}
@@ -164,16 +166,17 @@ def wait_for_completion():
         status = rlab.get_experiments(verbose=False)[0]["status"]
 
 
-N = 200
+N_TRAIN = 2000
+N_TEST = 1000
 SEED = 42
 SEED_TEST = SEED + 1000
 
 
 # Reference setting function
-def reference_setting(random_state):
+def reference_setting(random_state, n):
     inputs = {
         "red": sample_truncnorm_integers(
-            N,
+            n,
             mean=64,
             std=20,
             low=0,
@@ -181,7 +184,7 @@ def reference_setting(random_state):
             random_state=random_state + 11,
         ),
         "green": sample_truncnorm_integers(
-            N,
+            n,
             mean=32,
             std=30,
             low=0,
@@ -189,7 +192,7 @@ def reference_setting(random_state):
             random_state=random_state + 12,
         ),
         "blue": sample_truncnorm_integers(
-            N,
+            n,
             mean=90,
             std=12,
             low=0,
@@ -217,7 +220,7 @@ train_interventions = [
     # Env 3: Moderate red shift + small feedback
     {
         "red": sample_truncnorm_integers(
-            N, mean=100, std=25, low=0, high=255, random_state=SEED + 1
+            N_TRAIN, mean=100, std=25, low=0, high=255, random_state=SEED + 1
         ),
         "coef_led": 3,
         "coef_pol": 10,
@@ -225,7 +228,7 @@ train_interventions = [
     # Env 4: Green shift + moderate feedback
     {
         "green": sample_truncnorm_integers(
-            N, mean=80, std=25, low=0, high=255, random_state=SEED + 3
+            N_TRAIN, mean=80, std=25, low=0, high=255, random_state=SEED + 3
         ),
         "coef_led": 12,
         "coef_pol": 30,
@@ -233,7 +236,7 @@ train_interventions = [
     # Env 5: Blue shift (lower) + large feedback
     {
         "blue": sample_truncnorm_integers(
-            N, mean=60, std=20, low=0, high=255, random_state=SEED + 4
+            N_TRAIN, mean=60, std=20, low=0, high=255, random_state=SEED + 4
         ),
         "coef_led": 25,
         "coef_pol": 60,
@@ -248,7 +251,7 @@ test_interventions = [
     # Test Env 1: Zero feedback + red shift (descendants = pure noise)
     {
         "red": sample_truncnorm_integers(
-            N, mean=100, std=20, low=0, high=255, random_state=SEED_TEST + 1
+            N_TEST, mean=100, std=20, low=0, high=255, random_state=SEED_TEST + 1
         ),
     },
     # Test Env 2: Moderate feedback + green shift (mild extrapolation)
@@ -256,7 +259,7 @@ test_interventions = [
         "coef_led": 6,
         "coef_pol": 15,
         "green": sample_truncnorm_integers(
-            N, mean=100, std=20, low=0, high=255, random_state=SEED_TEST + 3
+            N_TEST, mean=100, std=20, low=0, high=255, random_state=SEED_TEST + 3
         ),
     },
     # Test Env 3: REVERSED feedback + blue shift
@@ -267,7 +270,7 @@ test_interventions = [
         "base_pol": 50,
         "coef_pol": -50,
         "blue": sample_truncnorm_integers(
-            N, mean=55, std=20, low=0, high=255, random_state=SEED_TEST + 4
+            N_TEST, mean=55, std=20, low=0, high=255, random_state=SEED_TEST + 4
         ),
     },
     # Test Env 4: Extreme positive feedback + all colors shifted
@@ -275,13 +278,13 @@ test_interventions = [
         "coef_led": 35,
         "coef_pol": 80,
         "red": sample_truncnorm_integers(
-            N, mean=90, std=25, low=0, high=255, random_state=SEED_TEST + 5
+            N_TEST, mean=90, std=25, low=0, high=255, random_state=SEED_TEST + 5
         ),
         "green": sample_truncnorm_integers(
-            N, mean=80, std=30, low=0, high=255, random_state=SEED_TEST + 6
+            N_TEST, mean=80, std=30, low=0, high=255, random_state=SEED_TEST + 6
         ),
         "blue": sample_truncnorm_integers(
-            N, mean=60, std=20, low=0, high=255, random_state=SEED_TEST + 7
+            N_TEST, mean=60, std=20, low=0, high=255, random_state=SEED_TEST + 7
         ),
     },
 ]
@@ -292,7 +295,7 @@ all_interventions = {
 }
 
 
-dataset_name = "data/5_v2"
+dataset_name = "data/2"
 
 
 produce_dataset(dataset_type="train")
