@@ -14,7 +14,7 @@ Compares:
   10. ICP-rf (Invariant Causal Prediction, random forest)
 
 Example:
-    python evaluate_all.py --dataset 1a --n-jobs 10 --methods stabclass irm irm2 vrex erm_nn rf_pooled rf_oracle logreg_pooled logreg_oracle icp_glm icp_rf --quiet
+    python evaluate_all.py --dataset 1a --n-jobs 10 --methods stabclass irm irm2 rf_pooled rf_oracle logreg_pooled logreg_oracle --size normal
 """
 
 from __future__ import annotations
@@ -47,21 +47,29 @@ from invariance_for_classification import StabilizedClassificationClassifier
 # global settings
 # ──────────────────────────────────────────────────────────────────────────────
 
-N_OBS_PER_ENV = 500  # cap training observations per environment
+N_OBS_PER_ENV = 200  # cap training observations per environment
 
 # ──────────────────────────────────────────────────────────────────────────────
 # stable blanket definitions (ground truth for oracle comparison)
 # ──────────────────────────────────────────────────────────────────────────────
 
 STABLE_BLANKETS: dict[str, list[str]] = {
-    "1a_small": ["red", "green", "blue", "vis_3"],
     "1a": ["red", "green", "blue", "vis_3"],
-    "1b_small": ["red", "green", "blue", "vis_3"],
     "1b": ["red", "green", "blue", "vis_3"],
-    "2_small": ["red", "green", "blue"],
     "2": ["red", "green", "blue"],
 }
 
+# Column subsets for "small" vs "normal" feature sets
+SMALL_COLS: dict[str, list[str]] = {
+    "1a": ["Y", "red", "green", "blue", "ir_3", "vis_3", "E"],
+    "1b": ["Y", "red", "green", "blue", "ir_3", "vis_3", "E"],
+    "2": ["Y", "red", "green", "blue", "ir_3", "vis_3", "E"],
+}
+NORMAL_COLS: dict[str, list[str]] = {
+    "1a": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "1b": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "2": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # data loading
@@ -69,9 +77,19 @@ STABLE_BLANKETS: dict[str, list[str]] = {
 
 
 def _load_train_test(
-    dataset: str, data_dir: str | None = None
+    dataset: str,
+    size: str = "small",
+    data_dir: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load train and test CSVs for a dataset."""
+    """Load train and test CSVs for a dataset.
+
+    Parameters
+    ----------
+    dataset : str
+        Dataset base name, e.g. '1a'.
+    size : str
+        'small' to use a reduced feature set, 'normal' for all features.
+    """
     if data_dir is None:
         data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     train_path = os.path.join(data_dir, f"{dataset}_train.csv")
@@ -80,7 +98,17 @@ def _load_train_test(
         sys.exit(f"Training file not found: {train_path}")
     if not os.path.exists(test_path):
         sys.exit(f"Test file not found: {test_path}")
-    return pd.read_csv(train_path), pd.read_csv(test_path)
+
+    df_train = pd.read_csv(train_path)
+    df_test = pd.read_csv(test_path)
+
+    cols_map = SMALL_COLS if size == "small" else NORMAL_COLS
+    if dataset in cols_map:
+        cols = [c for c in cols_map[dataset] if c in df_train.columns]
+        df_train = df_train[cols]
+        df_test = df_test[cols]
+
+    return df_train, df_test
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -521,6 +549,7 @@ def main(
     n_jobs: int = 1,
     verbose: bool = True,
     methods: list[str] | None = None,
+    size: str = "small",
 ) -> pd.DataFrame:
     """Run evaluation on a dataset and return summary DataFrame.
 
@@ -531,13 +560,15 @@ def main(
         Valid names: stabclass, irm, irm2, vrex, erm_nn,
                      rf_pooled, rf_oracle, logreg_pooled,
                      logreg_oracle, icp_glm, icp_rf.
+    size : str
+        'small' for reduced feature set, 'normal' for all features.
     """
     print("=" * 70)
     print("Evaluation of multiple methods")
     print("=" * 70)
 
     # load data
-    df_train, df_test = _load_train_test(dataset)
+    df_train, df_test = _load_train_test(dataset, size=size)
 
     # cap training observations per environment
     df_train = df_train.groupby("E").head(N_OBS_PER_ENV).reset_index(drop=True)
@@ -865,10 +896,18 @@ if __name__ == "__main__":
             "icp_glm, icp_rf."
         ),
     )
+    parser.add_argument(
+        "--size",
+        type=str,
+        default="small",
+        choices=["small", "normal"],
+        help="Feature set size: 'small' (default) or 'normal' (all features).",
+    )
     args = parser.parse_args()
     main(
         dataset=args.dataset,
         n_jobs=args.n_jobs,
         verbose=not args.quiet,
         methods=args.methods,
+        size=args.size,
     )

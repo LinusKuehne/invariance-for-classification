@@ -3,10 +3,12 @@ Comprehensive evaluation script for invariance tests on causal chambers datasets
 
 This script:
 1. Reads in a dataset and retrieves ground-truth invariant/non-invariant subsets
-2. Performs diagnostics (pairplot, distribution analysis, correlation matrices)
-3. Computes p-values for all invariance tests on all 2^d subsets (parallelized)
+2. Runs diagnostics
+3. Computes p-values for invariance tests on all 2^d subsets
 4. Evaluates test quality with plots and various metrics
 5. Additionally evaluates LOEO regret ranking (scores instead of p-values)
+
+Supported datasets: 1a, 1b, 2 (from the causal chambers data).
 
 ================================================================================
 COMMAND LINE FLAGS
@@ -16,66 +18,67 @@ COMMAND LINE FLAGS
     Name of the dataset CSV file (with or without .csv extension).
     The file should be in the data/ subdirectory.
     Examples:
-        python evaluate_all_tests.py --dataset simple
-        python evaluate_all_tests.py --dataset simple.csv
+        python evaluate_all_tests.py --dataset 1a
+        python evaluate_all_tests.py --dataset 2
 
 --workers <int>
     Number of parallel workers for test computation. Default: 10
     Example:
-        python evaluate_all_tests.py --dataset simple --workers 8
+        python evaluate_all_tests.py --dataset 1a --workers 8
 
 --tests <test1> <test2> ...
     Only run specific tests. Use lowercase test names (partial matching).
     If not specified, all tests are run.
 
     Available test names (use partial matching, e.g., "delong" matches all DeLong variants):
-      - CRT (HGBT)           - Conditional Randomization Test
-      - CRT (RF)
-      - DeLong (HGBT)        - DeLong AUC comparison test
-      - DeLong (LR)
-      - DeLong (RF)
-      - InvEnvPred (HGBT)    - Invariant Environment Prediction test
-      - InvEnvPred (RF)
-      - Residual (HGBT)      - Invariant Residual Distribution test
-      - Residual (LR)
-      - Residual (RF)
-      - TramGCM (HGBT)       - Tram-GCM test
-      - TramGCM (LR)
+      - CRT (RF)             - Conditional Randomization Test
+      - DeLong (RF)          - DeLong AUC comparison test
+      - InvEnvPred (RF)      - Invariant Environment Prediction test
+      - Residual (RF)        - Invariant Residual Distribution test
+      - TramGCM (LR)         - Tram-GCM test
       - TramGCM (RF)
-      - WGCM_est (xgb)       - Weighted GCM (estimated weights)
-      - WGCM_fix (xgb)       - Weighted GCM (fixed weights)
+      - WGCM_est (xgb)       - Weighted GCM
+      - WGCM_fix (xgb)
 
-    Examples:
-        python evaluate_all_tests.py --dataset simple --tests residual tramgcm
-        python evaluate_all_tests.py --dataset simple --tests crt  # runs all CRT variants
+--size <small|normal>
+    Feature set size to use for the dataset. 'small' selects a reduced feature set. Default: 'normal'
+
+Examples:
+    python evaluate_all_tests.py --dataset 1a --tests residual tramgcm
+    python evaluate_all_tests.py --dataset 2 --tests crt  # runs all CRT variants
 
 ================================================================================
 OUTPUT
 ================================================================================
 
 Results are saved to: <repo_root>/results/<dataset_name>/
+(When --size small is used, results are saved to <repo_root>/results/<dataset_name>_small/)
     - results_<dataset>.csv     : Raw p-values/scores for all test-subset pairs
     - metrics_<dataset>.csv     : Computed metrics (FPR, TPR, average and min/max among invariant/non-invariant)
     - ordered_pvalues_<dataset>.pdf : Ordered p-value plots for each test
-    - comparison_<dataset>.pdf  : Summary comparison of all tests
-    - diagnostics_*.pdf         : Data diagnostic plots
+    - comparison_fpr_tpr_<dataset>.pdf  : FPR vs TPR comparison plot
+    - comparison_auc_<dataset>.pdf      : Pairwise AUC comparison plot
+    - diagnostics_*.pdf                 : Data diagnostic plots
 
 ================================================================================
 EXAMPLES
 ================================================================================
 
 # Full evaluation with all tests
-python evaluate_all_tests.py --dataset simple
+python evaluate_all_tests.py --dataset 1a
 
 # Quick evaluation with only a fast test
-python evaluate_all_tests.py --dataset simple --tests delong
+python evaluate_all_tests.py --dataset 1b --tests delong
+
+# Evaluation with reduced feature set
+python evaluate_all_tests.py --dataset 1a --size small
 """
 
 import argparse
 import itertools
 import os
 
-# Limit threads for OpenMP-based libraries (HGBT, XGBoost) to allow proper
+# limit threads for OpenMP-based libraries (XGBoost) to allow proper
 # parallelization at the process level. Must be set before importing sklearn/xgboost.
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -103,6 +106,14 @@ from invariance_for_classification.invariance_tests import (
     WGCMTest,
 )
 from invariance_for_classification.rankings import loeo_regret
+
+# =============================================================================
+# Global Configuration
+# =============================================================================
+
+# Maximum number of observations per environment to use from the training data.
+# Set to None to use all observations.
+MAX_OBS_PER_ENV: int | None = 200
 
 # =============================================================================
 # Data Classes
@@ -175,30 +186,17 @@ def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]
 
     Add new datasets here as they are created.
     Uses frozenset for order-independent membership checking.
+
+    Parameters
+    ----------
+    name : str
+        Dataset base name without suffix, e.g. '1a', '1b', '2'.
+    features : list[str]
+        The feature columns actually present (after column filtering).
     """
-    if name == "simple.csv":
-        return {
-            frozenset({"X1"}),
-            frozenset({"X1", "X3"}),
-        }
-
-    if name in ["1a_small_train.csv", "1b_small_train.csv"]:
-        return {
-            frozenset(),  # empty set
-            frozenset({"red"}),
-            frozenset({"green"}),
-            frozenset({"blue"}),
-            frozenset({"red", "green"}),
-            frozenset({"red", "blue"}),
-            frozenset({"green", "blue"}),
-            frozenset({"red", "green", "blue"}),
-            frozenset({"red", "green", "blue", "vis_3"}),
-        }
-
-    if name in ["1a_train.csv", "1b_train.csv"]:
-        # Same as dataset_1_small, but each subset can optionally include ir_1 and/or vis_1
+    if name in ["1a", "1b"]:
         base_subsets = [
-            frozenset(),  # empty set
+            frozenset(),
             frozenset({"red"}),
             frozenset({"green"}),
             frozenset({"blue"}),
@@ -208,48 +206,63 @@ def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]
             frozenset({"red", "green", "blue"}),
             frozenset({"red", "green", "blue", "vis_3"}),
         ]
-        # For each base subset, create variants with optional ir_1 and/or vis_1
-        invariant_subsets = set()
-        optional_additions = [
-            frozenset(),
-            frozenset({"ir_1"}),
-            frozenset({"vis_1"}),
-            frozenset({"ir_1", "vis_1"}),
+        # optional additions: any combination of columns present beyond the base small set
+        optional_cols = [
+            f for f in features if f not in {"red", "green", "blue", "vis_3", "ir_3"}
         ]
+        optional_subsets = [frozenset()]
+        for r in range(1, len(optional_cols) + 1):
+            for combo in itertools.combinations(optional_cols, r):
+                optional_subsets.append(frozenset(combo))
+        invariant_subsets = set()
         for base in base_subsets:
-            for addition in optional_additions:
+            for addition in optional_subsets:
                 invariant_subsets.add(base | addition)
         return invariant_subsets
 
-    if name in ["2_small_train.csv"]:
-        return {
-            frozenset({"red", "green", "blue"}),
-        }
-
-    if name in ["2_train.csv"]:
-        return {
-            frozenset({"red", "green", "blue"}),
-            frozenset({"red", "green", "blue", "vis_1"}),
-            frozenset({"red", "green", "blue", "ir_2"}),
-            frozenset({"red", "green", "blue", "vis_2"}),
-            frozenset({"red", "green", "blue", "vis_1", "ir_2"}),
-            frozenset({"red", "green", "blue", "vis_1", "vis_2"}),
-            frozenset({"red", "green", "blue", "ir_2", "vis_2"}),
-            frozenset({"red", "green", "blue", "vis_1", "ir_2", "vis_2"}),
-        }
+    if name == "2":
+        base_subsets = [frozenset({"red", "green", "blue"})]
+        optional_cols = [
+            f for f in features if f not in {"red", "green", "blue", "ir_3", "vis_3"}
+        ]
+        optional_subsets = [frozenset()]
+        for r in range(1, len(optional_cols) + 1):
+            for combo in itertools.combinations(optional_cols, r):
+                optional_subsets.append(frozenset(combo))
+        invariant_subsets = set()
+        for base in base_subsets:
+            for addition in optional_subsets:
+                invariant_subsets.add(base | addition)
+        return invariant_subsets
 
     # default: empty set (no known invariant subsets)
     return set()
 
 
-def get_data(name: str, data_dir: str | None = None) -> DatasetInfo:
+SMALL_COLS: dict[str, list[str]] = {
+    "1a": ["Y", "red", "green", "blue", "ir_3", "vis_3", "E"],
+    "1b": ["Y", "red", "green", "blue", "ir_3", "vis_3", "E"],
+    "2": ["Y", "red", "green", "blue", "ir_3", "vis_3", "E"],
+}
+NORMAL_COLS: dict[str, list[str]] = {
+    "1a": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "1b": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "2": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
+}
+
+
+def get_data(
+    name: str, size: str = "small", data_dir: str | None = None
+) -> DatasetInfo:
     """
     Load dataset and return DatasetInfo with ground-truth invariant subsets.
 
     Parameters
     ----------
     name : str
-        Name of the CSV file (e.g., "simple" or "simple.csv")
+        Name of the CSV file or base name (e.g., "1a", "1b", "2")
+    size : str
+        'small' selects a reduced feature set; 'normal' uses all features.
     data_dir : str or None
         Directory containing the data files. If None, uses the data/ subdirectory
         relative to this script.
@@ -261,7 +274,10 @@ def get_data(name: str, data_dir: str | None = None) -> DatasetInfo:
     """
     # Ensure .csv extension
     if not name.endswith(".csv"):
-        name = name + ".csv"
+        name = name + "_train.csv"
+    else:
+        # e.g. "1a.csv" -> keep as-is; deduce base name for invariant lookup
+        pass
 
     # Use script-relative path if data_dir not specified
     if data_dir is None:
@@ -271,13 +287,31 @@ def get_data(name: str, data_dir: str | None = None) -> DatasetInfo:
     filepath = os.path.join(data_dir, name)
     df = pd.read_csv(filepath)
 
+    # Subsample to at most MAX_OBS_PER_ENV observations per environment
+    if MAX_OBS_PER_ENV is not None and "E" in df.columns:
+        max_obs = MAX_OBS_PER_ENV  # local binding for type narrowing
+        df = (
+            df.groupby("E", group_keys=False)
+            .apply(lambda g: g.head(max_obs))
+            .reset_index(drop=True)
+        )
+
+    # Derive dataset base name for invariant subset lookup (strip _train.csv / .csv)
+    base_name = name.replace("_train.csv", "").replace(".csv", "")
+
+    # Apply column filtering based on size
+    cols_map = SMALL_COLS if size == "small" else NORMAL_COLS
+    if base_name in cols_map:
+        cols = [c for c in cols_map[base_name] if c in df.columns]
+        df = df[cols]
+
     # Extract features (all columns except Y and E)
     features = [col for col in df.columns if col not in ["Y", "E"]]
 
     all_subsets = get_all_subsets(features)
 
     # Define invariant subsets for known datasets
-    invariant_subsets = _get_invariant_subsets(name, features)
+    invariant_subsets = _get_invariant_subsets(base_name, features)
 
     return DatasetInfo(
         df=df,
@@ -357,39 +391,7 @@ def run_diagnostics(
         plt.show()
     plt.close()
 
-    # Plot 2: Feature distributions by environment
-    print("Generating feature distribution plots...")
-    n_features = len(features)
-    n_cols = min(3, n_features)
-    n_rows = (n_features + n_cols - 1) // n_cols
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
-    axes = np.atleast_1d(axes).flatten()
-
-    for i, feat in enumerate(features):
-        sns.kdeplot(
-            data=df, x=feat, hue="E", common_norm=False, ax=axes[i], palette="husl"
-        )
-        axes[i].set_title(f"Distribution of {feat}")
-
-    # Hide unused axes
-    for i in range(n_features, len(axes)):
-        axes[i].set_visible(False)
-
-    plt.tight_layout()
-    fig.suptitle("Feature Distributions by Environment", y=1.02)
-
-    if save_dir:
-        filepath = os.path.join(
-            save_dir, f"{prefix}diagnostic_feature_distributions.pdf"
-        )
-        fig.savefig(filepath, bbox_inches="tight")
-        print(f"Saved: {filepath}")
-    else:
-        plt.show()
-    plt.close()
-
-    # Plot 3: Heatmap of correlations by environment
+    # Plot 2: Heatmap of correlations by environment
     print("Generating correlation heatmaps by environment...")
     envs = sorted(df["E"].unique())
     n_envs = len(envs)
@@ -454,30 +456,24 @@ def get_all_tests(test_filter: list[str] | None = None) -> dict[str, Any]:
     """
     tests = {}
 
-    # CRT: supports RF, HGBT
-    for clf in ["HGBT", "RF"]:
-        tests[f"CRT ({clf})"] = ConditionalRandomizationTest(
-            test_classifier_type=clf,
-        )
+    # CRT: RF only
+    tests["CRT (RF)"] = ConditionalRandomizationTest(test_classifier_type="RF")
 
-    # DeLong: supports RF, HGBT, LR
-    for clf in ["HGBT", "LR", "RF"]:
-        tests[f"DeLong ({clf})"] = DeLongTest(test_classifier_type=clf)
+    # DeLong: RF only
+    tests["DeLong (RF)"] = DeLongTest(test_classifier_type="RF")
 
-    # InvEnvPred: supports RF, HGBT
-    for clf in ["HGBT", "RF"]:
-        tests[f"InvEnvPred ({clf})"] = InvariantEnvironmentPredictionTest(
-            test_classifier_type=clf
-        )
+    # InvEnvPred: RF only
+    tests["InvEnvPred (RF)"] = InvariantEnvironmentPredictionTest(
+        test_classifier_type="RF"
+    )
 
-    # Residual: supports RF, HGBT, LR
-    for clf in ["HGBT", "LR", "RF"]:
-        tests[f"Residual ({clf})"] = InvariantResidualDistributionTest(
-            test_classifier_type=clf
-        )
+    # Residual: RF only
+    tests["Residual (RF)"] = InvariantResidualDistributionTest(
+        test_classifier_type="RF"
+    )
 
-    # TramGCM: supports RF, HGBT, LR
-    for clf in ["HGBT", "LR", "RF"]:
+    # TramGCM: LR and RF
+    for clf in ["LR", "RF"]:
         tests[f"TramGCM ({clf})"] = TramGcmTest(test_classifier_type=clf)
 
     # WGCM uses xgboost internally, two methods: "est" and "fix"
@@ -674,9 +670,9 @@ def run_all_tests_parallel(
                 except Exception as e:
                     print(f"\nError in test {test_name}: {e}")
 
-    # Also run LOEO regret ranking with both classifier types
-    print("\nRunning LOEO Regret ranking (RF and HGBT)...")
-    for clf_type in ["HGBT", "RF"]:
+    # Also run LOEO regret ranking with RF
+    print("\nRunning LOEO Regret ranking (RF)...")
+    for clf_type in ["RF"]:
         for subset in tqdm(data.all_subsets, desc=f"LOEO_Regret ({clf_type})"):
             results = _compute_loeo_regret_for_subset(
                 subset,
@@ -1030,14 +1026,13 @@ def plot_ordered_values(
     plt.close()
 
 
-def plot_comparison_summary(
+def plot_comparison_fpr_tpr(
     metrics_df: pd.DataFrame,
     save_path: str | None = None,
 ) -> None:
     """
-    Plot a summary comparison of all tests.
+    Plot FPR vs TPR comparison of all p-value tests.
     """
-    # Filter to p-value tests only
     pval_metrics = metrics_df[
         ~metrics_df["test_name"].str.startswith("LOEO_Regret")
     ].copy()
@@ -1046,17 +1041,12 @@ def plot_comparison_summary(
         print("No p-value tests to compare")
         return
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    axes = axes.flatten()
-
-    # Sort by test name for consistent ordering (same test with different models together)
     pval_metrics = pval_metrics.sort_values("test_name")
     test_names = pval_metrics["test_name"].tolist()
     x = np.arange(len(test_names))
-
-    # Plot 1: FPR vs TPR
-    ax = axes[0]
     width = 0.35
+
+    fig, ax = plt.subplots(figsize=(8, 5))
     ax.bar(x - width / 2, pval_metrics["FPR"], width, label="FPR", color="salmon")
     ax.bar(x + width / 2, pval_metrics["TPR"], width, label="TPR", color="steelblue")
     ax.axhline(y=0.05, color="black", linestyle=":", linewidth=1, label="α=0.05")
@@ -1066,61 +1056,23 @@ def plot_comparison_summary(
     ax.set_title("FPR vs TPR")
     ax.legend()
     ax.set_ylim(0, 1.05)
+    plt.tight_layout()
 
-    # Plot 2: Average p-values
-    ax = axes[1]
-    ax.bar(
-        x - width / 2,
-        pval_metrics["avg_value_inv"],
-        width,
-        label="Invariant",
-        color="green",
-        alpha=0.7,
-    )
-    ax.bar(
-        x + width / 2,
-        pval_metrics["avg_value_noninv"],
-        width,
-        label="Non-invariant",
-        color="red",
-        alpha=0.7,
-    )
-    ax.axhline(y=0.05, color="black", linestyle=":", linewidth=1, label="α=0.05")
-    ax.set_xticks(x)
-    ax.set_xticklabels(test_names, rotation=45, ha="right")
-    ax.set_ylabel("Average p-value")
-    ax.set_title("Average P-values by Ground Truth")
-    ax.legend()
-    ax.set_ylim(0, 1.05)
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"FPR vs TPR plot saved to {save_path}")
+    else:
+        plt.show()
+    plt.close()
 
-    # Plot 3: Min p-value (invariant) vs Max p-value (non-invariant)
-    ax = axes[2]
-    ax.bar(
-        x - width / 2,
-        pval_metrics["min_pval_inv"],
-        width,
-        label="Min P (invariant)",
-        color="green",
-        alpha=0.7,
-    )
-    ax.bar(
-        x + width / 2,
-        pval_metrics["max_pval_noninv"],
-        width,
-        label="Max P (non-inv)",
-        color="red",
-        alpha=0.7,
-    )
-    ax.axhline(y=0.05, color="black", linestyle=":", linewidth=1, label="α=0.05")
-    ax.set_xticks(x)
-    ax.set_xticklabels(test_names, rotation=45, ha="right")
-    ax.set_ylabel("P-value")
-    ax.set_title("Critical P-values (min invariant, max non-invariant)")
-    ax.legend()
-    ax.set_ylim(0, 1.05)
 
-    # Plot 4: Pairwise AUC (all tests including ranking)
-    ax = axes[3]
+def plot_comparison_auc(
+    metrics_df: pd.DataFrame,
+    save_path: str | None = None,
+) -> None:
+    """
+    Plot pairwise AUC comparison of all tests (including ranking).
+    """
     all_metrics = metrics_df.dropna(subset=["pairwise_auc"]).sort_values("test_name")
     all_names = all_metrics["test_name"].tolist()
     x_all = np.arange(len(all_names))
@@ -1128,6 +1080,8 @@ def plot_comparison_summary(
         "mediumpurple" if name.startswith("LOEO_Regret") else "steelblue"
         for name in all_names
     ]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
     ax.bar(x_all, all_metrics["pairwise_auc"], color=bar_colors, alpha=0.8)
     ax.axhline(y=0.5, color="black", linestyle=":", linewidth=1, label="Random (0.5)")
     ax.set_xticks(x_all)
@@ -1143,15 +1097,13 @@ def plot_comparison_summary(
     ]
     ax.legend(handles=legend_elements_auc, fontsize=8)
     ax.set_ylim(0, 1.05)
-
     plt.tight_layout()
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Comparison plot saved to {save_path}")
+        print(f"Pairwise AUC plot saved to {save_path}")
     else:
         plt.show()
-
     plt.close()
 
 
@@ -1161,10 +1113,11 @@ def plot_comparison_summary(
 
 
 def main(
-    dataset: str = "simple.csv",
+    dataset: str = "1a",
     n_workers: int | None = None,
     save_dir: str | None = None,
     test_filter: list[str] | None = None,
+    size: str = "small",
 ):
     """
     Main evaluation pipeline.
@@ -1172,35 +1125,39 @@ def main(
     Parameters
     ----------
     dataset : str
-        Name of the dataset CSV file
+        Name of the dataset CSV file or base name (e.g. '1a', '1b', '2').
     n_workers : int or None
         Number of parallel workers
     save_dir : str or None
         Directory to save results. If None, uses results/<dataset>/.
     test_filter : list[str] or None
         Filter tests by name (case-insensitive partial match).
+    size : str
+        'small' for reduced feature set, 'normal' for all features.
     """
     alpha = 0.05  # Fixed significance level
     # Extract dataset basename for naming output files
-    dataset_base = dataset.replace(".csv", "")
+    dataset_base = dataset.replace("_train.csv", "").replace(".csv", "")
 
     # Setup save_dir: default to results/<dataset>/ at repo root
     if save_dir is None:
         # Get repo root (two levels up from this script)
         script_dir = os.path.dirname(os.path.abspath(__file__))
         repo_root = os.path.dirname(os.path.dirname(script_dir))
-        save_dir = os.path.join(repo_root, "results", dataset_base)
+        folder_name = f"{dataset_base}_small" if size == "small" else dataset_base
+        save_dir = os.path.join(repo_root, "results", folder_name)
     os.makedirs(save_dir, exist_ok=True)
 
     print("=" * 70)
     print("INVARIANCE TEST EVALUATION")
     print("=" * 70)
     print(f"Dataset: {dataset}")
+    print(f"Size: {size}")
     print(f"Significance level: {alpha}")
 
     # Load data
     print("\nLoading data...")
-    data = get_data(dataset)
+    data = get_data(dataset, size=size)
     print(f"Features: {data.features}")
     print(f"Number of subsets: {len(data.all_subsets)}")
     print(f"Invariant subsets: {len(data.invariant_subsets)}")
@@ -1240,9 +1197,14 @@ def main(
         save_path=os.path.join(save_dir, f"ordered_pvalues_{dataset_base}.pdf"),
     )
 
-    plot_comparison_summary(
+    plot_comparison_fpr_tpr(
         metrics_df,
-        save_path=os.path.join(save_dir, f"comparison_{dataset_base}.pdf"),
+        save_path=os.path.join(save_dir, f"comparison_fpr_tpr_{dataset_base}.pdf"),
+    )
+
+    plot_comparison_auc(
+        metrics_df,
+        save_path=os.path.join(save_dir, f"comparison_auc_{dataset_base}.pdf"),
     )
 
     print("\n" + "=" * 70)
@@ -1257,7 +1219,10 @@ if __name__ == "__main__":
         description="Evaluate invariance tests on causal chambers datasets"
     )
     parser.add_argument(
-        "--dataset", type=str, default="simple.csv", help="Dataset CSV file name"
+        "--dataset",
+        type=str,
+        default="1a",
+        help="Dataset CSV file name or base name (e.g. '1a', '1b', '2')",
     )
     parser.add_argument(
         "--workers", type=int, default=10, help="Number of parallel workers"
@@ -1272,6 +1237,13 @@ if __name__ == "__main__":
         default=None,
         help="Filter tests by name (case-insensitive partial match). E.g., --tests delong wgcm",
     )
+    parser.add_argument(
+        "--size",
+        type=str,
+        default="normal",
+        choices=["small", "normal"],
+        help="Feature set size: 'small' (default) or 'normal' (all features).",
+    )
 
     args = parser.parse_args()
 
@@ -1280,4 +1252,5 @@ if __name__ == "__main__":
         n_workers=args.workers,
         save_dir=args.save_dir,
         test_filter=args.tests,
+        size=args.size,
     )

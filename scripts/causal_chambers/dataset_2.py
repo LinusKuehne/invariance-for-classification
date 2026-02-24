@@ -18,8 +18,8 @@ from utils import SAVE_COLS, sample_truncnorm_integers, wait_for_completion
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 
-N_TRAIN = 200
-N_TEST = 200
+N_TRAIN = 10000
+N_TEST = 5000
 
 # threshold on ir_1 to determine Y=0 vs Y=1
 THRESHOLD = 12500
