@@ -1,29 +1,34 @@
 """
-LOEO (Leave-One-Environment-Out) Regret Ranking.
+LOEO Regret (Leave-One-Environment-Out Regret).
 
-This implements a ranking metric using a Leave-One-Environment-Out (LOEO) regret approach.
+For each held-out environment *e* and feature subset *S*:
 
-For each held-out environment e:
-  1. Train a global model on all other environments → evaluate on e → global_loss_e
-  2. Train individual models on each other env e' → evaluate on e → env_loss_e'
-  3. regret_e = global_loss_e - mean(env_loss_e')
+  1. Train environment-specific classifiers f_S^{e'} for every e' ≠ e.
+  2. Form the LOEO average (ensemble) classifier
+
+         f_S^{-e}(x) = (1 / |E|-1) Σ_{e'≠e} f_S^{e'}(x)
+
+  3. Compute the LOEO regret in environment *e*:
+
+         R_e^LOEO(S) = R_e(f_S^{-e}) - (1 / |E|-1) Σ_{e'≠e} R_e(f_S^{e'})
+
+     where R_e(·) is the mean BCE loss evaluated on data from environment e.
 
 Returns a dictionary with aggregate scores (mean and min of regrets).
 Higher values (closer to 0) indicate "more invariant".
 
-Intuition: If Y|X_S is truly invariant, a model pooling data from multiple
-environments should perform comparably to individual environment models when
-transferred to a new environment. The regret should be consistently small
-across held-out environments.
-
-The regret formulation normalises away base-rate differences across environments,
-making the ranking robust to datasets where P(Y=1) varies across environments.
+Intuition: If Y | X_S is truly invariant across environments, averaging the
+predicted probabilities of environment-specific models should not hurt
+compared with using them individually—the ensemble prediction converges to
+the shared conditional. A large negative regret signals that individual
+models disagree, i.e. the conditional is environment-specific.
 """
 
 from typing import Literal, Optional
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 
 
 def _binary_cross_entropy(
@@ -51,16 +56,16 @@ def _binary_cross_entropy(
 
 
 def _make_classifier(
-    classifier_type: Literal["RF", "HGBT"] = "HGBT",
+    classifier_type: Literal["RF", "HGBT", "LR"] = "RF",
     random_state: Optional[int] = 42,
     n_estimators: int = 100,
-) -> RandomForestClassifier | HistGradientBoostingClassifier:
+) -> RandomForestClassifier | HistGradientBoostingClassifier | LogisticRegression:
     """
     Create a classifier with appropriate regularisation.
 
     Parameters
     ----------
-    classifier_type : {"RF", "HGBT"}, default="HGBT"
+    classifier_type : {"RF", "HGBT", "LR"}, default="RF"
         Classifier type to create.
     random_state : int or None, default=42
         Random seed for reproducibility.
@@ -69,7 +74,7 @@ def _make_classifier(
 
     Returns
     -------
-    RandomForestClassifier or HistGradientBoostingClassifier
+    RandomForestClassifier, HistGradientBoostingClassifier, or LogisticRegression
     """
     if classifier_type == "HGBT":
         return HistGradientBoostingClassifier(
@@ -79,33 +84,17 @@ def _make_classifier(
             learning_rate=0.05,
             max_iter=200,
         )
+    if classifier_type == "LR":
+        return LogisticRegression(
+            random_state=random_state,
+            max_iter=1000,
+            C=1e10,  # approximate unpenalized logistic regression
+        )
     return RandomForestClassifier(
         n_estimators=n_estimators,
         random_state=random_state,
         n_jobs=1,
     )
-
-
-def _mean_bce_loss(
-    clf: RandomForestClassifier | HistGradientBoostingClassifier,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-) -> float:
-    """
-    Train *clf* on (X_train, y_train) and return mean BCE loss on (X_test, y_test).
-
-    If the training set contains only one class, the marginal rate is predicted
-    instead of fitting the classifier.
-    """
-    if len(np.unique(y_train)) < 2:
-        p = float(np.mean(y_train))
-        return float(np.mean(_binary_cross_entropy(y_test, np.full(len(y_test), p))))
-
-    clf.fit(X_train, y_train)
-    preds = clf.predict_proba(X_test)[:, 1]
-    return float(np.mean(_binary_cross_entropy(y_test, preds)))
 
 
 def loeo_regret(
@@ -114,27 +103,28 @@ def loeo_regret(
     X_S: np.ndarray,
     n_estimators: int = 100,
     random_state: Optional[int] = 42,
-    classifier_type: Literal["RF", "HGBT"] = "HGBT",
+    classifier_type: Literal["RF", "HGBT", "LR"] = "HGBT",
 ) -> dict[str, float]:
     """
-    Compute LOEO (Leave-One-Environment-Out) regret scores.
-
-    Uses a Leave-One-Environment-Out scheme:
+    Compute LOEO Regret 2 (ensemble variant) scores.
 
     For each held-out environment *e*:
-      1. Train a **global** model on data from all other environments and
-         compute its mean BCE loss on *e* → ``global_loss_e``.
-      2. For every other environment *e'*, train an **env-specific** model on
-         *e'* alone and compute its mean BCE loss on *e* → ``env_loss_{e',e}``.
-      3. ``regret_e = global_loss_e - mean(env_loss_{e',e}  for e' ≠ e)``
+
+      1. For every other environment *e'*, train an environment-specific model
+         on *e'* and obtain predicted probabilities on *e* → ``preds_{e'}``.
+      2. Form the ensemble prediction by averaging:
+         ``ensemble_preds_e = mean(preds_{e'}  for e' ≠ e)``.
+      3. Compute BCE loss of ensemble predictions on *e* → ``ensemble_loss_e``.
+      4. Compute BCE loss of each individual model on *e* → ``env_loss_{e'}``.
+      5. ``regret_e = ensemble_loss_e - mean(env_loss_{e'}  for e' ≠ e)``.
 
     Returns a dictionary containing aggregated scores based on the regrets:
-      - 'mean': Mean of regrets.
-      - 'min': Minimum of regrets.
+      - 'mean': Mean of regrets across held-out environments.
+      - 'min': Minimum of regrets across held-out environments.
 
-    Higher values (closer to 0) indicate more invariance. A very negative regret
-    means the global model performed much worse than environment-specific models
-    (indicating environment-specificity).
+    Higher values (closer to 0) indicate more invariance. A very negative
+    regret means the averaged (ensemble) prediction performed much worse than
+    individual environment-specific models, signalling environment-specificity.
 
     Parameters
     ----------
@@ -148,7 +138,7 @@ def loeo_regret(
         Number of trees in the random forest (only used for RF).
     random_state : int or None, default=42
         Random seed for reproducibility.
-    classifier_type : {"RF", "HGBT"}, default="HGBT"
+    classifier_type : {"RF", "HGBT", "LR"}, default="HGBT"
         Classifier type to use. HGBT is recommended for best performance.
 
     Returns
@@ -167,44 +157,57 @@ def loeo_regret(
     Y = np.asarray(Y).astype(int)
     E = np.asarray(E)
 
+    # --- fit one model per environment once and store it ---
+    fitted_models: dict = {}
+    for e_train in unique_envs:
+        mask_e = E == e_train
+        if X_S.shape[1] == 0:
+            # no features: just store the marginal rate
+            fitted_models[e_train] = float(np.mean(Y[mask_e]))
+        else:
+            clf = _make_classifier(classifier_type, random_state, n_estimators)
+            y_e = Y[mask_e]
+            if len(np.unique(y_e)) < 2:
+                # single-class environment: store marginal rate
+                fitted_models[e_train] = float(np.mean(y_e))
+            else:
+                clf.fit(X_S[mask_e], y_e)
+                fitted_models[e_train] = clf
+
+    # --- pre-compute all pairwise predictions: preds[e_train][e_test] ---
+    # preds[e'][e] = predicted P(Y=1) by model trained on e', evaluated on e
+    preds: dict[object, dict[object, np.ndarray]] = {}
+    for e_train in unique_envs:
+        preds[e_train] = {}
+        model = fitted_models[e_train]
+        for e_test in unique_envs:
+            if e_test == e_train:
+                continue
+            mask_test = E == e_test
+            if isinstance(model, float):
+                preds[e_train][e_test] = np.full(int(mask_test.sum()), model)
+            else:
+                preds[e_train][e_test] = model.predict_proba(X_S[mask_test])[:, 1]
+
     regrets: list[float] = []
 
     for e in unique_envs:
-        mask_test = E == e
-        mask_train = E != e
+        y_test = Y[E == e]
         other_envs = [e2 for e2 in unique_envs if e2 != e]
-        y_test = Y[mask_test]
 
-        # --- global model trained on all other environments ---
-        if X_S.shape[1] == 0:
-            p = float(np.mean(Y[mask_train]))
-            global_loss = float(
-                np.mean(_binary_cross_entropy(y_test, np.full(len(y_test), p)))
-            )
-        else:
-            clf = _make_classifier(classifier_type, random_state, n_estimators)
-            global_loss = _mean_bce_loss(
-                clf, X_S[mask_train], Y[mask_train], X_S[mask_test], y_test
-            )
+        # --- individual env losses and stacked predictions ---
+        all_preds = np.stack([preds[e2][e] for e2 in other_envs], axis=0)
+        env_losses = [
+            float(np.mean(_binary_cross_entropy(y_test, preds[e2][e])))
+            for e2 in other_envs
+        ]
 
-        # --- individual env-specific models (one per other environment) ---
-        env_losses: list[float] = []
-        for e2 in other_envs:
-            mask_e2 = E == e2
-            if X_S.shape[1] == 0:
-                p = float(np.mean(Y[mask_e2]))
-                eloss = float(
-                    np.mean(_binary_cross_entropy(y_test, np.full(len(y_test), p)))
-                )
-            else:
-                clf = _make_classifier(classifier_type, random_state, n_estimators)
-                eloss = _mean_bce_loss(
-                    clf, X_S[mask_e2], Y[mask_e2], X_S[mask_test], y_test
-                )
-            env_losses.append(eloss)
+        # --- ensemble: average of environment-specific predictions ---
+        ensemble_preds = np.mean(all_preds, axis=0)
+        ensemble_loss = float(np.mean(_binary_cross_entropy(y_test, ensemble_preds)))
 
         avg_env_loss = float(np.mean(env_losses))
-        regrets.append(global_loss - avg_env_loss)
+        regrets.append(ensemble_loss - avg_env_loss)
 
     regrets_arr = np.array(regrets)
 
