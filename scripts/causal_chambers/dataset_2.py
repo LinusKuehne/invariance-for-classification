@@ -124,6 +124,9 @@ def produce_dataset_2(dataset_type="train"):
         )
         experiment_ids_phase2.append(experiment_id)
 
+        # avoid submitting experiments too quickly (not to trigger firewall)
+        time.sleep(2)
+
     print(f"Waiting for phase 2 ({dataset_type})...")
     wait_for_completion(rlab)
 
