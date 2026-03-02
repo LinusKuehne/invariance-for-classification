@@ -9,10 +9,6 @@ import inspect
 
 import numpy as np
 import pytest
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 from invariance_for_classification import (
     StabilizedClassificationClassifier,
@@ -238,51 +234,51 @@ class TestFindsInvariantSubsets:
         """Test that invariance tests identify the correct invariant subsets."""
         df = large_data
 
-        clf = StabilizedClassificationClassifier(
-            alpha_inv=0.05, n_bootstrap=20, random_state=42
-        )
-        X, y, environment = clf._validate_input(df, y="Y", environment="E")
+        # Map test class to the invariance_test string expected by the classifier
+        inv_test_name_map = {
+            "InvariantResidualDistributionTest": "inv_residual",
+            "TramGcmTest": "tram_gcm",
+            "WGCMTest": "wgcm",
+            "DeLongTest": "delong",
+            "InvariantEnvironmentPredictionTest": "inv_env_pred",
+            "ConditionalRandomizationTest": "crt",
+        }
+        inv_test_str = inv_test_name_map.get(inv_test_cls.__name__)
+        if inv_test_str is None:
+            pytest.skip(f"No mapping for {inv_test_cls.__name__}")
 
-        # Initialize label encoder (needed by _find_invariant_subsets)
-        clf.le_ = LabelEncoder()
-        y = clf.le_.fit_transform(y)
-        clf.classes_ = clf.le_.classes_
-        n_features = X.shape[1]
-
-        # Set up prediction classifier
-        if pred_classifier_type == "RF":
-            pred_classifier = RandomForestClassifier(
-                n_estimators=100, oob_score=True, random_state=42, n_jobs=1
-            )
-        else:
-            pred_classifier = Pipeline(
-                [
-                    ("scaler", StandardScaler()),
-                    ("lr", LogisticRegression(random_state=42, max_iter=1000)),
-                ]
-            )
-
-        # Instantiate the invariance test
+        # Check that the test_classifier_type is supported by this test
         try:
-            inv_test = inv_test_cls(test_classifier_type=test_classifier_type)
-        except NotImplementedError:
+            inv_test_cls(test_classifier_type=test_classifier_type)
+        except (NotImplementedError, ValueError):
             pytest.skip(
                 f"{inv_test_cls.__name__} does not support {test_classifier_type}"
             )
 
-        subset_stats, _ = clf._find_invariant_subsets(
-            X, y, environment, n_features, inv_test, pred_classifier
+        clf = StabilizedClassificationClassifier(
+            alpha_inv=0.05,
+            n_bootstrap=20,
+            random_state=42,
+            pred_classifier_type=pred_classifier_type,
+            test_classifier_type=test_classifier_type,
+            invariance_test=inv_test_str,
+            n_jobs=4,
         )
+        clf.fit(df, y="Y", environment="E")
 
-        invariant_subsets = {frozenset(s["subset"]) for s in subset_stats}
+        all_invariant = clf._all_invariant_fitted_
+        assert isinstance(all_invariant, list)
+        invariant_subsets: set[frozenset[int]] = {
+            frozenset(s["subset"]) for s in all_invariant
+        }
 
         # {X1} (index 0) is invariant; {X1,X3} should also be invariant in this SCM
         # Note: DeLong test is an indirect test that may not have valid level
         # in all situations, so we only require {0} for it.
-        if inv_test.name == "delong":
-            expected = {frozenset({0})}
+        if inv_test_str == "delong":
+            expected: set[frozenset[int]] = {frozenset({0})}
         else:
-            expected = {frozenset({0}), frozenset({0, 2})}
+            expected: set[frozenset[int]] = {frozenset({0}), frozenset({0, 2})}
 
         missing = expected - invariant_subsets
         assert not missing, (
