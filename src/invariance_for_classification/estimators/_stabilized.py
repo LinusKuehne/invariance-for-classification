@@ -14,7 +14,42 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.utils import check_random_state, resample
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
+from ..rankings import loeo_regret
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helper classifiers
+# ---------------------------------------------------------------------------
+
+
+class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
+    """Internal dummy classifier for the empty feature set (use mean of class 1)."""
+
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        if len(self.classes_) == 1:
+            self.prior_ = np.array([1.0])
+        else:
+            self.prior_ = np.array([np.mean(y == c) for c in self.classes_])
+        # mock OOB decision function (optimistic, just repeats prior)
+        n_samples = len(y)
+        self.oob_decision_function_ = np.tile(self.prior_, (n_samples, 1))
+        return self
+
+    def predict_proba(self, X):
+        n_samples = X.shape[0]
+        return np.tile(self.prior_, (n_samples, 1))
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return (proba[:, 1] >= 0.5).astype(int)
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
 
 def _fit_model_helper(X: np.ndarray, y: np.ndarray, pred_classifier):
@@ -29,8 +64,8 @@ def _fit_model_helper(X: np.ndarray, y: np.ndarray, pred_classifier):
 
 
 def _aggregate_score(y, y_pred, environment, pred_scoring):
-    """Compute negative log-loss, either pooled or worst-case across environments."""
-    if pred_scoring == "pooled":
+    """Compute negative log-loss, either mean or worst-case across environments."""
+    if pred_scoring == "mean":
         return float(-log_loss(y, y_pred, labels=[0, 1]))
     elif pred_scoring == "worst_case":
         env_scores = []
@@ -44,7 +79,7 @@ def _aggregate_score(y, y_pred, environment, pred_scoring):
         raise ValueError(f"Unknown pred_scoring: {pred_scoring}")
 
 
-def _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring="pooled"):
+def _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring="mean"):
     """Fit a model on all data and compute its out-of-sample predictiveness score.
 
     Returns (model, score) where model is fitted on ALL data.
@@ -91,17 +126,38 @@ def _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring="pooled"):
 def _subset_worker(
     subset, X, y, environment, inv_test, pred_classifiers, alpha_inv, pred_scoring
 ):
-    """Compute p-value and, if invariant, fit all prediction classifiers.
+    """Evaluate a single feature subset: test invariance and fit classifiers.
+
+    Runs the invariance test on the subset. If the subset is invariant
+    (p-value >= alpha_inv), fits every classifier in *pred_classifiers* and
+    records out-of-sample predictive scores.
 
     Parameters
     ----------
+    subset : tuple[int, ...]
+        Feature indices defining the subset.
+    X : np.ndarray of shape (n_samples, n_features)
+        Full feature matrix.
+    y : np.ndarray of shape (n_samples,)
+        Binary target (0/1 encoded).
+    environment : np.ndarray of shape (n_samples,)
+        Environment labels.
+    inv_test : InvarianceTest
+        Instantiated invariance test with a ``.test(X, y, E)`` method.
     pred_classifiers : dict[str, estimator]
-        Mapping of classifier name (e.g. "RF", "LR") to sklearn estimator.
+        Mapping of classifier name (e.g. "RF", "LR") to an unfitted
+        sklearn estimator (or Pipeline).
+    alpha_inv : float
+        Significance level; subsets with p-value >= alpha_inv are invariant.
+    pred_scoring : {"mean", "worst_case"}
+        How to aggregate the predictive score across environments.
 
     Returns
     -------
-    dict with keys: subset, p_value, and for each invariant classifier
-    ``{name}_model`` and ``{name}_score``.
+    dict
+        Always contains ``"subset"`` (list[int]) and ``"p_value"`` (float).
+        For invariant subsets additionally contains ``"{name}_model"`` and
+        ``"{name}_score"`` for each entry in *pred_classifiers*.
     """
     subset = list(subset)
     X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
@@ -122,24 +178,27 @@ def _loeo_subset_worker(
     X,
     y,
     environment,
-    loeo_ranking_fn,
     loeo_classifier_type,
     loeo_random_state,
     pred_classifiers,
     pred_scoring,
 ):
-    """Compute LOEO score and fit all prediction classifiers.
+    """Evaluate a single feature subset using LOEO regret ranking.
 
-    Models are always fitted (the invariance cutoff is not known yet).
+    Computes the LOEO regret score and fits every classifier in
+    *pred_classifiers*.  Models are always fitted because the invariance
+    cutoff is not known until all subsets have been evaluated.
 
     Returns
     -------
-    dict with keys: subset, inv_score, and ``{name}_model`` / ``{name}_score``
-    for each classifier in *pred_classifiers*.
+    dict
+        Always contains ``"subset"`` (list[int]) and ``"inv_score"`` (float).
+        Additionally contains ``"{name}_model"`` / ``"{name}_score"``
+        for each classifier in *pred_classifiers*.
     """
     subset = list(subset)
     X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
-    scores = loeo_ranking_fn(
+    scores = loeo_regret(
         Y=y,
         E=environment,
         X_S=X_S,
@@ -157,7 +216,7 @@ def _loeo_subset_worker(
 
 
 def _bootstrap_worker(
-    seed, X, y, S_max, pred_classifier, pred_scoring="pooled", environment=None
+    seed, X, y, S_max, pred_classifier, pred_scoring="mean", environment=None
 ):
     """Worker function to compute a single bootstrap score."""
     rng = np.random.RandomState(seed)
@@ -189,7 +248,6 @@ def _loeo_regret_inv_bootstrap_worker(
     y,
     environment,
     S_best,
-    loeo_ranking_fn,
     loeo_classifier_type,
     loeo_random_state,
 ):
@@ -208,7 +266,7 @@ def _loeo_regret_inv_bootstrap_worker(
 
     X_S_boot = X_boot[:, S_best] if len(S_best) > 0 else np.zeros((len(indices), 0))
 
-    scores = loeo_ranking_fn(
+    scores = loeo_regret(
         Y=y_boot,
         E=env_boot,
         X_S=X_S_boot,
@@ -217,34 +275,6 @@ def _loeo_regret_inv_bootstrap_worker(
     )
 
     return scores["mean"]
-
-
-# ---------------------------------------------------------------------------
-# Helper classifiers
-# ---------------------------------------------------------------------------
-
-
-class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
-    """Internal dummy classifier for the empty feature set (use mean of class 1)."""
-
-    def fit(self, X, y):
-        self.classes_ = np.unique(y)
-        if len(self.classes_) == 1:
-            self.prior_ = np.array([1.0])
-        else:
-            self.prior_ = np.array([np.mean(y == c) for c in self.classes_])
-        # mock OOB decision function (optimistic, just repeats prior)
-        n_samples = len(y)
-        self.oob_decision_function_ = np.tile(self.prior_, (n_samples, 1))
-        return self
-
-    def predict_proba(self, X):
-        n_samples = X.shape[0]
-        return np.tile(self.prior_, (n_samples, 1))
-
-    def predict(self, X):
-        proba = self.predict_proba(X)
-        return (proba[:, 1] >= 0.5).astype(int)
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +334,9 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
           are ranked by their LOEO regret score and filtered using a
           bootstrap-based cutoff instead of a p-value threshold.
 
-    pred_scoring : str, default="pooled"
+    pred_scoring : str, default="mean"
         Strategy for computing the predictiveness score of invariant subsets.
-        - "pooled": Train and evaluate on pooled data across all training
+        - "mean": Train and evaluate on pooled data across all training
           environments (standard ERM). This is the default.
         - "worst_case": Train on all environments pooled, but evaluate
           per-environment and take the worst (maximum) risk across
@@ -343,7 +373,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         pred_classifier_type: Union[str, list[str]] = "RF",
         test_classifier_type: str = "RF",
         invariance_test: str = "inv_residual",
-        pred_scoring: str = "pooled",
+        pred_scoring: str = "mean",
         n_bootstrap: int = 250,
         verbose: int = 0,
         random_state: Optional[int] = None,
@@ -422,10 +452,10 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             clf_types: list[str] = [self.pred_classifier_type]
         pred_classifiers = {ct: self._make_pred_classifier(ct) for ct in clf_types}
 
-        if self.pred_scoring not in ("pooled", "worst_case"):
+        if self.pred_scoring not in ("mean", "worst_case"):
             raise ValueError(
                 f"Unknown pred_scoring: {self.pred_scoring}. "
-                "Choose from 'pooled', 'worst_case'."
+                "Choose from 'mean', 'worst_case'."
             )
 
         # Generate all 2^p feature subsets
@@ -438,8 +468,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
         # --- Step 1: Evaluate all subsets (invariance + fit classifiers) ---
         if self.invariance_test == "loeo_regret":
-            from ..rankings import loeo_regret
-
             all_results = cast(
                 list[dict[str, Any]],
                 Parallel(n_jobs=self.n_jobs)(
@@ -448,7 +476,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                         X,
                         y_encoded,
                         environment,
-                        loeo_regret,
                         self.test_classifier_type,
                         self.random_state,
                         pred_classifiers,
@@ -536,6 +563,9 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         active_by_clf: dict[str, list[dict[str, Any]]] = {}
         n_pred_by_clf: dict[str, int] = {}
 
+        # Key that holds the invariance metric (p-value or LOEO score)
+        inv_key = "inv_score" if self.invariance_test == "loeo_regret" else "p_value"
+
         for ct, clf in pred_classifiers.items():
             # Build per-classifier list from the shared invariant results
             subset_stats: list[dict[str, Any]] = [
@@ -543,6 +573,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                     "subset": r["subset"],
                     "score": r[f"{ct}_score"],
                     "model": r[f"{ct}_model"],
+                    inv_key: r[inv_key],
                 }
                 for r in invariant_results
             ]
@@ -705,7 +736,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         For a single-classifier fit, returns the stored lists directly.
         For a multi-classifier fit, indexes into the per-classifier dicts.
         """
-        if self._multi_classifier:
+        if getattr(self, "_multi_classifier", False):
             assert isinstance(self.active_subsets_, dict)
             assert isinstance(self._all_invariant_fitted_, dict)
             if pred_classifier_type is None:
@@ -725,8 +756,9 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             )
         else:
             assert isinstance(self.active_subsets_, list)
-            assert isinstance(self._all_invariant_fitted_, list)
-            return self.active_subsets_, self._all_invariant_fitted_
+            all_fitted = getattr(self, "_all_invariant_fitted_", self.active_subsets_)
+            assert isinstance(all_fitted, list)
+            return self.active_subsets_, all_fitted
 
     def _make_pred_classifier(self, clf_type: str):
         """Create a prediction classifier instance by type string."""
@@ -818,8 +850,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
     def _compute_invariance_cutoff(self, X, y, environment, all_stats):
         """Compute invariance cutoff via bootstrapping the best LOEO-ranked subset."""
-        from ..rankings import loeo_regret
-
         if not all_stats:
             return -np.inf
 
@@ -836,7 +866,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 y,
                 environment,
                 S_best,
-                loeo_regret,
                 self.test_classifier_type,
                 self.random_state,
             )
