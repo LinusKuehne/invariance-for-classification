@@ -518,7 +518,8 @@ class IRMNNClassifier(ClassifierMixin, BaseEstimator):
         self.best_n_epochs_ = best_n_epochs
 
         # Retrain on ALL data with the best config for exactly the number
-        # of epochs that early stopping selected (no val set needed).
+        # of epochs that early stopping selected.  No val data is passed, so
+        # the early-stopping block in _train_model is never entered.
         hp = _Hparams(
             hidden_width=best_cfg["hidden_width"],
             depth=best_cfg["depth"],
@@ -530,7 +531,6 @@ class IRMNNClassifier(ClassifierMixin, BaseEstimator):
             batch_size=best_cfg.get("batch_size"),
             seed=best_cfg["seed"],
             n_epochs=best_n_epochs,
-            patience=best_n_epochs + 1,  # effectively disable early stopping
         )
 
         self._model, _ = _train_model(
