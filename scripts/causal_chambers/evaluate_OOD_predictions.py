@@ -41,9 +41,9 @@ OUTPUT
 ================================================================================
 Results are saved to: <repo_root>/results/<dataset>/
 
-  - OOD_raw_<dataset>.csv          Per-rep, per-environment results (incremental)
-  - OOD_sc_subsets_<dataset>.csv   Subset counts for SC configs (incremental)
-  - OOD_summary_<dataset>.csv      Means and 95% t-CIs over repetitions
+  - OOD_raw_<dataset>_n<n_obs>.csv          Per-rep, per-environment results (incremental)
+  - OOD_sc_subsets_<dataset>_n<n_obs>.csv   Subset counts for SC configs (incremental)
+  - OOD_summary_<dataset>_n<n_obs>.csv      Means and 95% t-CIs over repetitions
 
 ================================================================================
 USAGE
@@ -599,9 +599,11 @@ def main(
     save_dir = os.path.join(repo_root, "results", dataset)
     os.makedirs(save_dir, exist_ok=True)
 
-    raw_path = os.path.join(save_dir, f"OOD_raw_{dataset}.csv")
-    sc_subsets_path = os.path.join(save_dir, f"OOD_sc_subsets_{dataset}.csv")
-    summary_path = os.path.join(save_dir, f"OOD_summary_{dataset}.csv")
+    raw_path = os.path.join(save_dir, f"OOD_raw_{dataset}_n{n_obs_per_env}.csv")
+    sc_subsets_path = os.path.join(
+        save_dir, f"OOD_sc_subsets_{dataset}_n{n_obs_per_env}.csv"
+    )
+    summary_path = os.path.join(save_dir, f"OOD_summary_{dataset}_n{n_obs_per_env}.csv")
 
     # Remove stale output files so every run starts fresh
     for p in (raw_path, sc_subsets_path, summary_path):

@@ -16,6 +16,7 @@ USAGE
     python generate_latex_tables.py
     python generate_latex_tables.py --results-dir ../../results --output tables.txt
     python generate_latex_tables.py --decimals 3
+    python generate_latex_tables.py --n-obs 1000
 """
 
 from __future__ import annotations
@@ -148,13 +149,13 @@ def _ci_half_width(values: np.ndarray, confidence: float = 0.95) -> float:
     return float(t_crit * se)
 
 
-def _load_min_acc(results_dir: str, dataset: str) -> dict[str, np.ndarray]:
+def _load_min_acc(results_dir: str, dataset: str, n_obs: int) -> dict[str, np.ndarray]:
     """
     Load raw CSV and return {method: array_of_min_acc_per_rep}.
 
     The min is taken over test environments within each rep.
     """
-    path = os.path.join(results_dir, dataset, f"OOD_raw_{dataset}.csv")
+    path = os.path.join(results_dir, dataset, f"OOD_raw_{dataset}_n{n_obs}.csv")
     if not os.path.exists(path):
         print(f"WARNING: {path} not found, skipping dataset {dataset}")
         return {}
@@ -235,7 +236,9 @@ def _cell(
 # =============================================================================
 
 
-def build_table1(data: dict[str, dict[str, np.ndarray]], decimals: int) -> str:
+def build_table1(
+    data: dict[str, dict[str, np.ndarray]], decimals: int, n_obs: int
+) -> str:
     """Build Table 1: main results."""
     # Determine best per column (excluding oracle)
     all_non_oracle = [
@@ -306,7 +309,7 @@ def build_table1(data: dict[str, dict[str, np.ndarray]], decimals: int) -> str:
     a(r"    Worst-case test accuracy (minimum over five test environments) for")
     a(r"    stabilized classification (SC) configurations and baselines.")
     a(r"    Entries show the mean $\pm$ half-width of a 95\% $t$-confidence")
-    a(r"    interval over 20 repetitions with $n = 200$ observations per")
+    a(f"    interval over 20 repetitions with $n = {n_obs}$ observations per")
     a(r"    training environment.%")
     a(r"  }")
     a(r"  \label{tab:main-results}")
@@ -354,7 +357,9 @@ def _table2_row_pair(
     ]
 
 
-def build_table2(data: dict[str, dict[str, np.ndarray]], decimals: int) -> str:
+def build_table2(
+    data: dict[str, dict[str, np.ndarray]], decimals: int, n_obs: int
+) -> str:
     """Build Table 2: ensemble vs best subset."""
     # Determine best per column across all ensemble + best methods
     all_t2_csv: list[str] = []
@@ -407,7 +412,7 @@ def build_table2(data: dict[str, dict[str, np.ndarray]], decimals: int) -> str:
     a(r"    aggregates predictions across all predictive invariant subsets")
     a(r"    (the default SC method); ``best subset'' uses only the single")
     a(r"    most predictive invariant subset.  Entries show worst-case test")
-    a(r"    accuracy (mean $\pm$ 95\% CI, 20 repetitions, $n = 200$).%")
+    a(f"    accuracy (mean $\\pm$ 95\\% CI, 20 repetitions, $n = {n_obs}$).%")
     a(r"  }")
     a(r"  \label{tab:appendix-ensemble-vs-best}")
     a(r"\end{table}")
@@ -420,14 +425,14 @@ def build_table2(data: dict[str, dict[str, np.ndarray]], decimals: int) -> str:
 # =============================================================================
 
 
-def main(results_dir: str, output: str, decimals: int) -> None:
+def main(results_dir: str, output: str, decimals: int, n_obs: int) -> None:
     # Load data for all datasets
     data: dict[str, dict[str, np.ndarray]] = {}
     for ds in DATASETS:
-        data[ds] = _load_min_acc(results_dir, ds)
+        data[ds] = _load_min_acc(results_dir, ds, n_obs)
 
-    table1 = build_table1(data, decimals)
-    table2 = build_table2(data, decimals)
+    table1 = build_table1(data, decimals, n_obs)
+    table2 = build_table2(data, decimals, n_obs)
 
     full = (
         "% =============================================================================\n"
@@ -479,9 +484,16 @@ if __name__ == "__main__":
         default=2,
         help="Number of decimal places for mean and CI (default: 2).",
     )
+    parser.add_argument(
+        "--n-obs",
+        type=int,
+        default=200,
+        help="Number of observations per environment used in the evaluation run (default: 200).",
+    )
     args = parser.parse_args()
     main(
         results_dir=args.results_dir,
         output=args.output,
         decimals=args.decimals,
+        n_obs=args.n_obs,
     )
