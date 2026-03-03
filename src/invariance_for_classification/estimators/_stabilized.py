@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helper classifiers
+# helper functions
 # ---------------------------------------------------------------------------
 
 
@@ -45,11 +45,6 @@ class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
     def predict(self, X):
         proba = self.predict_proba(X)
         return (proba[:, 1] >= 0.5).astype(int)
-
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
 
 
 def _fit_model_helper(X: np.ndarray, y: np.ndarray, pred_classifier):
@@ -84,7 +79,7 @@ def _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring="mean"):
 
     Returns (model, score) where model is fitted on ALL data.
     """
-    # Handle empty feature set (0 columns) – use majority-class dummy
+    # handle empty feature set (0 columns): use majority-class dummy
     if X_S.shape[1] == 0:
         model = _EmptySetClassifier()
         model.fit(X_S, y)
@@ -119,11 +114,11 @@ def _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring="mean"):
 
 
 # ---------------------------------------------------------------------------
-# Worker functions for parallel execution
+# worker functions for parallel computation
 # ---------------------------------------------------------------------------
 
 
-def _subset_worker(
+def _pval_subset_worker(
     subset, X, y, environment, inv_test, pred_classifiers, alpha_inv, pred_scoring
 ):
     """Evaluate a single feature subset: test invariance and fit classifiers.
@@ -215,10 +210,10 @@ def _loeo_subset_worker(
     return result
 
 
-def _bootstrap_worker(
+def _bootstrap_predictiveness_worker(
     seed, X, y, S_max, pred_classifier, pred_scoring="mean", environment=None
 ):
-    """Worker function to compute a single bootstrap score."""
+    """Worker function to compute a single bootstrap predictiveness score for predictiveness cutoff."""
     rng = np.random.RandomState(seed)
     n_samples = X.shape[0]
     indices = np.asarray(resample(np.arange(n_samples), replace=True, random_state=rng))
@@ -278,7 +273,7 @@ def _loeo_regret_inv_bootstrap_worker(
 
 
 # ---------------------------------------------------------------------------
-# Main estimator
+# main estimator
 # ---------------------------------------------------------------------------
 
 
@@ -326,7 +321,8 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         The invariance test or ranking method to use. Options:
         - "inv_residual": InvariantResidualDistributionTest
         - "tram_gcm": TramGcmTest
-        - "wgcm": WGCMTest
+        - "wgcm_est": WGCMTest with method="est"
+        - "wgcm_fix": WGCMTest with method="fix"
         - "delong": DeLongTest
         - "inv_env_pred": InvariantEnvironmentPredictionTest
         - "crt": ConditionalRandomizationTest
@@ -389,12 +385,13 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self.verbose = verbose
         self.random_state = random_state
         self.n_jobs = n_jobs
+        self._multi_classifier = False
 
     # ------------------------------------------------------------------
-    # Public API
+    # public API
     # ------------------------------------------------------------------
 
-    def fit(self, X, y=None, environment=None):
+    def fit(self, X, y, environment):
         """
         Fit the model.
 
@@ -415,11 +412,11 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             Make sure to drop any extra columns that are neither predictors,
             the label, nor the environment.
 
-        y : array-like or str, optional
+        y : array-like or str
             Target values (binary) or column name in `X`.
 
         environment : array-like or str
-            Environment labels or column name in `X`. Must be provided.
+            Environment labels or column name in `X`.
 
         Returns
         -------
@@ -443,7 +440,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self.n_features_in_ = X.shape[1]
         n_features = self.n_features_in_
 
-        # Normalize pred_classifier_type to a list for unified processing
+        # normalize pred_classifier_type to a list for unified processing
         if isinstance(self.pred_classifier_type, list):
             self._multi_classifier = True
             clf_types: list[str] = self.pred_classifier_type
@@ -458,7 +455,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                 "Choose from 'mean', 'worst_case'."
             )
 
-        # Generate all 2^p feature subsets
+        # generate all 2^p feature subsets
         all_indices = range(n_features)
         feature_subsets = list(
             chain.from_iterable(
@@ -466,7 +463,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             )
         )
 
-        # --- Step 1: Evaluate all subsets (invariance + fit classifiers) ---
+        # --- Step 1: evaluate all subsets (invariance + fit classifiers) ---
         if self.invariance_test == "loeo_regret":
             all_results = cast(
                 list[dict[str, Any]],
@@ -492,7 +489,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                             f"Subset {r['subset']}: loeo_score={r['inv_score']:.6f}"
                         )
 
-            # Compute invariance cutoff via bootstrap, then filter
+            # compute invariance cutoff via bootstrap, then filter
             inv_cutoff = self._compute_invariance_cutoff(
                 X, y_encoded, environment, all_results
             )
@@ -510,7 +507,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             all_results = cast(
                 list[dict[str, Any]],
                 Parallel(n_jobs=self.n_jobs)(
-                    delayed(_subset_worker)(
+                    delayed(_pval_subset_worker)(
                         subset,
                         X,
                         y_encoded,
@@ -543,7 +540,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                     logger.warning(
                         "No invariant subsets found. Using subset with max p-value."
                     )
-                # Fallback: pick best p-value subset and fit classifiers for it
+                # fallback: pick best p-value subset and fit classifiers for it
                 best = dict(max(all_results, key=lambda x: x["p_value"]))
                 subset = best["subset"]
                 X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
@@ -558,16 +555,16 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         self.n_subsets_total_ = 2**n_features
         self.n_invariant_subsets_ = len(invariant_results)
 
-        # --- Step 2: Per classifier – predictive cutoff and ensemble filtering ---
+        # --- Step 2: predictive cutoff and ensemble filtering (per classifier) ---
         all_fitted_by_clf: dict[str, list[dict[str, Any]]] = {}
         active_by_clf: dict[str, list[dict[str, Any]]] = {}
         n_pred_by_clf: dict[str, int] = {}
 
-        # Key that holds the invariance metric (p-value or LOEO score)
+        # key that holds the invariance metric (p-value or LOEO score)
         inv_key = "inv_score" if self.invariance_test == "loeo_regret" else "p_value"
 
         for ct, clf in pred_classifiers.items():
-            # Build per-classifier list from the shared invariant results
+            # build per-classifier list from the shared invariant results
             subset_stats: list[dict[str, Any]] = [
                 {
                     "subset": r["subset"],
@@ -590,7 +587,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             active_by_clf[ct] = active
             n_pred_by_clf[ct] = n_active
 
-        # Store results — keep backward-compatible types for single classifier
+        # store results (keep backward-compatible types for single classifier)
         if self._multi_classifier:
             self.active_subsets_ = active_by_clf
             self.n_predictive_subsets_ = n_pred_by_clf
@@ -616,7 +613,8 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             Ignored (uses the single fitted type) when a string was given.
         method : {"ensemble", "best"}, default="ensemble"
             - "ensemble": average predictions from all active subsets (default).
-            - "best": use only the single most predictive invariant subset.
+            - "best": use only the invariant subset with the highest
+              predictiveness score (ignoring the predictive cutoff).
 
         Returns
         -------
@@ -682,7 +680,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         return self.le_.inverse_transform(predictions_int)
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # private helpers
     # ------------------------------------------------------------------
 
     def _validate_input(self, X, y, environment):
@@ -798,10 +796,14 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             from ..invariance_tests import TramGcmTest
 
             return TramGcmTest(test_classifier_type=self.test_classifier_type)
-        elif self.invariance_test == "wgcm":
+        elif self.invariance_test == "wgcm_est":
             from ..invariance_tests import WGCMTest
 
-            return WGCMTest(use_categorical_loss=True)
+            return WGCMTest(method="est", use_categorical_loss=True)
+        elif self.invariance_test == "wgcm_fix":
+            from ..invariance_tests import WGCMTest
+
+            return WGCMTest(method="fix", use_categorical_loss=True)
         elif self.invariance_test == "delong":
             from ..invariance_tests import DeLongTest
 
@@ -834,7 +836,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         )
 
         bootstrap_scores = Parallel(n_jobs=self.n_jobs)(
-            delayed(_bootstrap_worker)(
+            delayed(_bootstrap_predictiveness_worker)(
                 seed, X, y, S_max, pred_classifier, self.pred_scoring, environment
             )
             for seed in seeds
