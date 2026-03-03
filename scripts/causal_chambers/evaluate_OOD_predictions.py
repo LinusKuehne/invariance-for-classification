@@ -103,8 +103,8 @@ NORMAL_COLS: dict[str, list[str]] = {
 
 # SC invariance test configurations:
 # (display_name, invariance_test, test_classifier_type or None)
+# Limited to those appearing in the paper tables (CRT omitted).
 SC_CONFIGS: list[tuple[str, str, str | None]] = [
-    ("CRT(RF)", "crt", "RF"),
     ("DeLong(RF)", "delong", "RF"),
     ("DeLong(LR)", "delong", "LR"),
     ("InvEnvPred(RF)", "inv_env_pred", "RF"),
@@ -172,8 +172,8 @@ def _subsample_train(
 def _extract_positive_proba(y_proba: np.ndarray) -> np.ndarray:
     """Extract P(Y=1) from predict_proba output."""
     if y_proba.ndim == 2:
-        return y_proba[:, 1]
-    return y_proba
+        return np.clip(y_proba[:, 1], 0.0, 1.0)
+    return np.clip(y_proba, 0.0, 1.0)
 
 
 def _per_env_metrics(
