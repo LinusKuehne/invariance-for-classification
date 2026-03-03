@@ -196,8 +196,8 @@ class TestStabilizedClassifierEnsemble:
         clf = StabilizedClassificationClassifier(n_bootstrap=20, n_jobs=2)
         clf.fit(X, y, environment=E)
 
-        weights = [s["weight"] for s in clf.active_subsets_]
-        assert np.isclose(sum(weights), 1.0)
+        weights = [s["weight"] for s in clf.active_subsets_]  # type: ignore[index]
+        assert np.isclose(sum(weights), 1.0)  # type: ignore[arg-type]
 
     def test_each_subset_has_model(self, small_data):
         """Each active subset should have a fitted model."""
@@ -209,7 +209,7 @@ class TestStabilizedClassifierEnsemble:
         clf = StabilizedClassificationClassifier(n_bootstrap=20, n_jobs=2)
         clf.fit(X, y, environment=E)
 
-        for stat in clf.active_subsets_:
+        for stat in clf.active_subsets_:  # type: ignore[union-attr]
             assert "model" in stat
             assert "subset" in stat
             assert "score" in stat
@@ -226,8 +226,8 @@ class TestStabilizedClassifierEnsemble:
         clf.fit(X, y, environment=E)
 
         # at least p-values should be valid
-        for stat in clf.active_subsets_:
-            assert 0 <= stat["p_value"] <= 1
+        for stat in clf.active_subsets_:  # type: ignore[union-attr]
+            assert 0 <= stat["p_value"] <= 1  # type: ignore[index]
 
 
 class TestStabilizedClassifierErrors:
@@ -240,8 +240,8 @@ class TestStabilizedClassifierErrors:
         y = df["Y"].to_numpy()
 
         clf = StabilizedClassificationClassifier()
-        with pytest.raises(ValueError, match="Environment"):
-            clf.fit(X, y)
+        with pytest.raises(TypeError):
+            clf.fit(X, y)  # type: ignore[call-arg]
 
     def test_single_environment_error(self, small_data):
         """Should raise if only one environment present."""
@@ -355,8 +355,8 @@ class TestStabilizedClassifierReproducibility:
 
         # Predictions or active subsets should differ due to different bootstrap samples
         # (not guaranteed, but very likely with different seeds)
-        subsets1 = {frozenset(s["subset"]) for s in clf1.active_subsets_}
-        subsets2 = {frozenset(s["subset"]) for s in clf2.active_subsets_}
+        subsets1 = {frozenset(s["subset"]) for s in clf1.active_subsets_}  # type: ignore[index]
+        subsets2 = {frozenset(s["subset"]) for s in clf2.active_subsets_}  # type: ignore[index]
         preds_differ = not np.allclose(preds1, preds2)
         subsets_differ = subsets1 != subsets2
 
@@ -442,6 +442,7 @@ class TestEnsembleAveraging:
             {"subset": [0], "model": model_1, "weight": 0.5},
             {"subset": [1], "model": model_2, "weight": 0.5},
         ]
+        clf._all_invariant_fitted_ = clf.active_subsets_
 
         X = np.zeros((10, 2))
         proba = clf.predict_proba(X)
