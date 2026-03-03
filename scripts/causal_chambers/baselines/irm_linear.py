@@ -2,7 +2,7 @@
 IRM implementation closely following the InvarianceUnitTests repository
 (Facebook Research, Arjovsky et al.).
 
-Key differences from the neural_net.py IRMClassifier:
+Key differences from the irm_nn.py IRMNNClassifier:
   - Linear model (no hidden layers), matching InvarianceUnitTests
   - IRMLayer wrapper with dummy_mul / dummy_sum parameters
   - Penalty: sum_e ||grad_{dummy} L_e||^2  (gradient w.r.t. dummies)
@@ -316,7 +316,7 @@ def _grid_search(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class IRM2Classifier(ClassifierMixin, BaseEstimator):
+class IRMLinearClassifier(ClassifierMixin, BaseEstimator):
     """
     IRM classifier following the InvarianceUnitTests (Facebook Research)
     implementation.
@@ -351,7 +351,7 @@ class IRM2Classifier(ClassifierMixin, BaseEstimator):
 
     def fit(
         self, X: np.ndarray, y: np.ndarray, environment: np.ndarray
-    ) -> "IRM2Classifier":
+    ) -> "IRMLinearClassifier":
         """
         Fit the model with hyperparameter grid search.
 
@@ -383,7 +383,7 @@ class IRM2Classifier(ClassifierMixin, BaseEstimator):
         X_envs, y_envs, _ = _split_by_env(X_s, y, environment)
 
         if self.verbose:
-            print("  Fitting IRM 2 (InvarianceUnitTests-style)...")
+            print("  Fitting IRM-Linear (InvarianceUnitTests-style)...")
 
         # Grid search
         best_cfg, self._grid_results = _grid_search(
@@ -401,11 +401,8 @@ class IRM2Classifier(ClassifierMixin, BaseEstimator):
 
         self.best_config_ = best_cfg
 
-        # Retrain on full training data with best config
-        X_tr, y_tr, X_va, y_va = _split_train_val(
-            X_envs, y_envs, val_frac=0.2, seed=self.random_state
-        )
-
+        # Retrain on full training data with best config (no early stopping
+        # in the linear model, so we can safely use all data).
         hp = _Hparams(
             lr=best_cfg["lr"],
             weight_decay=best_cfg["weight_decay"],
@@ -415,11 +412,9 @@ class IRM2Classifier(ClassifierMixin, BaseEstimator):
         )
 
         self._model = _train_irm_linear(
-            X_tr,
-            y_tr,
+            X_envs,
+            y_envs,
             hp,
-            X_val_envs=X_va,
-            y_val_envs=y_va,
             device=self.device,
             verbose=self.verbose,
         )

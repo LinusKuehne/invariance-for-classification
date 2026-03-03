@@ -1,14 +1,10 @@
 """
-Neural network baselines: IRM, V-REx, and ERM with sklearn-like interface.
+Neural network IRM baseline with sklearn-like interface.
 
-Standalone, self-contained implementation of:
-- IRM (Arjovsky et al., 2019)
-- V-REx (Krueger et al., 2020)
-- ERM (standard neural network baseline)
+Standalone, self-contained implementation of IRM (Arjovsky et al., 2019)
+for low-dimensional tabular data with environment labels.
 
-Designed for low-dimensional tabular data with environment labels.
-
-These are NOT part of the main package — they exist only for comparison
+This is NOT part of the main package — it exists only for comparison.
 """
 
 from __future__ import annotations
@@ -91,7 +87,6 @@ class _Hparams:
     lr: float = 1e-3
     weight_decay: float = 0.0
     irm_lambda: float = 0.0
-    vrex_lambda: float = 0.0
     anneal_iters: int = 100
     n_epochs: int = 500
     patience: int = 100
@@ -187,8 +182,8 @@ def _train_model(
     y_val_envs: list[np.ndarray] | None = None,
     device: str = "cpu",
     verbose: bool = False,
-) -> TabularMLP:
-    """Train an IRM/V-REx/ERM model."""
+) -> tuple[TabularMLP, int]:
+    """Train an IRM model.  Returns (model, n_epochs_trained)."""
     torch.manual_seed(hparams.seed)
     np.random.seed(hparams.seed)
     rng = torch.Generator().manual_seed(hparams.seed)
@@ -222,6 +217,7 @@ def _train_model(
     patience_counter = 0
     annealing_done = hparams.anneal_iters == 0
     use_minibatch = hparams.batch_size is not None
+    final_epoch = hparams.n_epochs  # will be overwritten by early stopping
 
     for epoch in range(hparams.n_epochs):
         model.train()
@@ -248,24 +244,18 @@ def _train_model(
 
             erm_loss = torch.stack(env_losses).mean()
             irm_penalty_val = torch.stack(env_penalties).mean()
-            env_losses_tensor = torch.stack(env_losses)
-            vrex_penalty_val = ((env_losses_tensor - erm_loss) ** 2).mean()
 
             if epoch < hparams.anneal_iters:
                 irm_weight = 0.0
-                vrex_weight = 0.0
             else:
                 irm_weight = hparams.irm_lambda
-                vrex_weight = hparams.vrex_lambda
                 if not annealing_done:
                     annealing_done = True
                     best_val_metric = float("inf")
                     best_state = None
                     patience_counter = 0
 
-            total_loss = (
-                erm_loss + irm_weight * irm_penalty_val + vrex_weight * vrex_penalty_val
-            )
+            total_loss = erm_loss + irm_weight * irm_penalty_val
 
             optimizer.zero_grad()
             total_loss.backward()
@@ -293,13 +283,14 @@ def _train_model(
                 if patience_counter >= hparams.patience:
                     if verbose:
                         print(f"    Early stopping at epoch {epoch + 1}")
+                    final_epoch = epoch + 1
                     break
 
     if has_val and best_state is not None:
         model.load_state_dict(best_state)
 
     model.eval()
-    return model
+    return model, final_epoch
 
 
 @torch.no_grad()
@@ -341,8 +332,8 @@ def _evaluate_single_config(
     X_va: list[np.ndarray],
     y_va: list[np.ndarray],
     device: str,
-) -> tuple[dict, float, float]:
-    """Train one config, return (cfg, worst_val_bce, mean_val_bce)."""
+) -> tuple[dict, float, float, int]:
+    """Train one config, return (cfg, worst_val_bce, mean_val_bce, n_epochs_used)."""
     hp = _Hparams(
         hidden_width=cfg["hidden_width"],
         depth=cfg["depth"],
@@ -350,7 +341,6 @@ def _evaluate_single_config(
         lr=cfg["lr"],
         weight_decay=cfg["weight_decay"],
         irm_lambda=cfg.get("irm_lambda", 0.0),
-        vrex_lambda=cfg.get("vrex_lambda", 0.0),
         anneal_iters=cfg["anneal_iters"],
         batch_size=cfg.get("batch_size"),
         seed=cfg["seed"],
@@ -358,7 +348,7 @@ def _evaluate_single_config(
         patience=100,
     )
 
-    model = _train_model(
+    model, n_epochs_used = _train_model(
         X_tr, y_tr, hp, X_val_envs=X_va, y_val_envs=y_va, device=device
     )
 
@@ -368,7 +358,7 @@ def _evaluate_single_config(
         bce_v = log_loss(y_v, np.clip(prob_v, 1e-7, 1 - 1e-7), labels=[0, 1])
         val_bces.append(bce_v)
 
-    return cfg, float(max(val_bces)), float(np.mean(val_bces))
+    return cfg, float(max(val_bces)), float(np.mean(val_bces)), n_epochs_used
 
 
 def _grid_search(
@@ -380,8 +370,11 @@ def _grid_search(
     device: str = "cpu",
     n_jobs: int = 1,
     verbose: bool = False,
-) -> tuple[dict | None, list[tuple[dict, float, float]]]:
-    """Grid search for a specific method (IRM, V-REx, or ERM)."""
+) -> tuple[dict | None, int, list[tuple[dict, float, float, int]]]:
+    """Grid search for IRM.
+
+    Returns (best_config, best_n_epochs, all_results).
+    """
     base_grid = _build_base_grid()
 
     # Combine base grid with penalty configs
@@ -401,21 +394,27 @@ def _grid_search(
         delayed(_evaluate_single_config)(cfg, X_tr, y_tr, X_va, y_va, device)
         for cfg in grid
     )
-    results: list[tuple[dict, float, float]] = [r for r in raw_results if r is not None]  # type: ignore[misc]
+    results: list[tuple[dict, float, float, int]] = [
+        r for r in raw_results if r is not None
+    ]  # type: ignore[misc]
 
     # find best config
     best_metric = float("inf")
     best_cfg: dict | None = None
-    for cfg, worst_bce, _ in results:
+    best_n_epochs = 500
+    for cfg, worst_bce, _, n_ep in results:
         if worst_bce < best_metric:
             best_metric = worst_bce
             best_cfg = cfg.copy()
+            best_n_epochs = n_ep
 
     if verbose and best_cfg is not None:
-        print(f"    Best config: worst_val_bce={best_metric:.4f}")
+        print(
+            f"    Best config: worst_val_bce={best_metric:.4f}, epochs={best_n_epochs}"
+        )
         print(f"      {best_cfg}")
 
-    return best_cfg, results
+    return best_cfg, best_n_epochs, results
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -423,12 +422,33 @@ def _grid_search(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseNNClassifier(ClassifierMixin, BaseEstimator):
-    """Base class for IRM/V-REx/ERM classifiers (sklearn interface)."""
+class IRMNNClassifier(ClassifierMixin, BaseEstimator):
+    """
+    IRM (Invariant Risk Minimization) classifier with neural network.
 
-    # Subclasses should set these
-    _penalty_configs: list[dict] = []
-    _method_name: str = "NN"
+    Uses grid search over architecture and IRM penalty weight on an 80/20
+    validation split.  After selecting the best hyperparameters **and** the
+    epoch count at which early stopping fired, retrains on 100% of the
+    training data for exactly that many epochs (no early stopping).
+
+    Parameters
+    ----------
+    n_jobs : int, default=1
+        Number of parallel workers for grid search.
+    device : str, default="cpu"
+        PyTorch device ("cpu" or "cuda").
+    verbose : bool, default=False
+        If True, print grid search progress.
+    random_state : int, default=42
+        Random seed for reproducibility.
+    """
+
+    _penalty_configs: list[dict] = [
+        {"irm_lambda": 1.0},
+        {"irm_lambda": 10.0},
+        {"irm_lambda": 100.0},
+    ]
+    _method_name = "IRM-NN"
 
     def __init__(
         self,
@@ -444,7 +464,7 @@ class _BaseNNClassifier(ClassifierMixin, BaseEstimator):
 
     def fit(
         self, X: np.ndarray, y: np.ndarray, environment: np.ndarray
-    ) -> "_BaseNNClassifier":
+    ) -> "IRMNNClassifier":
         """
         Fit the model with hyperparameter grid search.
 
@@ -479,8 +499,8 @@ class _BaseNNClassifier(ClassifierMixin, BaseEstimator):
         if self.verbose:
             print(f"  Fitting {self._method_name}...")
 
-        # Grid search
-        best_cfg, self._grid_results = _grid_search(
+        # Grid search on 80/20 split
+        best_cfg, best_n_epochs, self._grid_results = _grid_search(
             X_envs,
             y_envs,
             penalty_cfgs=self._penalty_configs,
@@ -495,12 +515,10 @@ class _BaseNNClassifier(ClassifierMixin, BaseEstimator):
             raise RuntimeError("Grid search failed to find any valid configuration.")
 
         self.best_config_ = best_cfg
+        self.best_n_epochs_ = best_n_epochs
 
-        # Retrain on full data with best config
-        X_tr, y_tr, X_va, y_va = _split_train_val(
-            X_envs, y_envs, val_frac=0.2, seed=self.random_state
-        )
-
+        # Retrain on ALL data with the best config for exactly the number
+        # of epochs that early stopping selected (no val set needed).
         hp = _Hparams(
             hidden_width=best_cfg["hidden_width"],
             depth=best_cfg["depth"],
@@ -508,20 +526,17 @@ class _BaseNNClassifier(ClassifierMixin, BaseEstimator):
             lr=best_cfg["lr"],
             weight_decay=best_cfg["weight_decay"],
             irm_lambda=best_cfg.get("irm_lambda", 0.0),
-            vrex_lambda=best_cfg.get("vrex_lambda", 0.0),
             anneal_iters=best_cfg["anneal_iters"],
             batch_size=best_cfg.get("batch_size"),
             seed=best_cfg["seed"],
-            n_epochs=500,
-            patience=100,
+            n_epochs=best_n_epochs,
+            patience=best_n_epochs + 1,  # effectively disable early stopping
         )
 
-        self._model = _train_model(
-            X_tr,
-            y_tr,
+        self._model, _ = _train_model(
+            X_envs,
+            y_envs,
             hp,
-            X_val_envs=X_va,
-            y_val_envs=y_va,
             device=self.device,
             verbose=self.verbose,
         )
@@ -542,79 +557,3 @@ class _BaseNNClassifier(ClassifierMixin, BaseEstimator):
         """Return class predictions."""
         proba = self.predict_proba(X)
         return (proba[:, 1] >= 0.5).astype(int)
-
-
-class IRMClassifier(_BaseNNClassifier):
-    """
-    IRM (Invariant Risk Minimization) classifier.
-
-    Uses grid search over architecture and IRM penalty weight.
-
-    Parameters
-    ----------
-    n_jobs : int, default=1
-        Number of parallel workers for grid search.
-    device : str, default="cpu"
-        PyTorch device ("cpu" or "cuda").
-    verbose : bool, default=False
-        If True, print grid search progress.
-    random_state : int, default=42
-        Random seed for reproducibility.
-    """
-
-    _penalty_configs = [
-        {"irm_lambda": 1.0, "vrex_lambda": 0.0},
-        {"irm_lambda": 10.0, "vrex_lambda": 0.0},
-        {"irm_lambda": 100.0, "vrex_lambda": 0.0},
-    ]
-    _method_name = "IRM"
-
-
-class VRExClassifier(_BaseNNClassifier):
-    """
-    V-REx (Variance Risk Extrapolation) classifier.
-
-    Uses grid search over architecture and V-REx penalty weight.
-
-    Parameters
-    ----------
-    n_jobs : int, default=1
-        Number of parallel workers for grid search.
-    device : str, default="cpu"
-        PyTorch device ("cpu" or "cuda").
-    verbose : bool, default=False
-        If True, print grid search progress.
-    random_state : int, default=42
-        Random seed for reproducibility.
-    """
-
-    _penalty_configs = [
-        {"irm_lambda": 0.0, "vrex_lambda": 1.0},
-        {"irm_lambda": 0.0, "vrex_lambda": 10.0},
-        {"irm_lambda": 0.0, "vrex_lambda": 100.0},
-    ]
-    _method_name = "V-REx"
-
-
-class ERMClassifier(_BaseNNClassifier):
-    """
-    ERM (Empirical Risk Minimization) neural network classifier.
-
-    Standard MLP without invariance penalties, for use as a baseline.
-
-    Parameters
-    ----------
-    n_jobs : int, default=1
-        Number of parallel workers for grid search.
-    device : str, default="cpu"
-        PyTorch device ("cpu" or "cuda").
-    verbose : bool, default=False
-        If True, print grid search progress.
-    random_state : int, default=42
-        Random seed for reproducibility.
-    """
-
-    _penalty_configs = [
-        {"irm_lambda": 0.0, "vrex_lambda": 0.0},
-    ]
-    _method_name = "ERM (NN)"
