@@ -562,9 +562,7 @@ def build_auc_table(
     lines: list[str] = []
     a = lines.append
 
-    a(r"\begin{table}[t]")
-    a(r"  \centering")
-    a(r"  \begin{tabular}{@{}lccc@{}}")
+    a(r"\begin{tabular}{@{}lccc@{}}")
     a(r"    \toprule")
     a(r"    Method")
     a(r"      & {Dataset 1a}")
@@ -589,15 +587,6 @@ def build_auc_table(
 
     a(r"    \bottomrule")
     a(r"  \end{tabular}")
-    a(r"  \caption{%")
-    a(r"    Pairwise AUC for separating ground-truth invariant from non-invariant")
-    a(r"    subsets.  Higher values indicate better discrimination.")
-    a(r"    Entries show the mean $\pm$ half-width of a 95\% $t$-confidence")
-    a(f"    interval over 20 repetitions with $n = {n_obs}$ observations per")
-    a(r"    training environment.%")
-    a(r"  }")
-    a(r"  \label{tab:invariance-auc}")
-    a(r"\end{table}")
 
     return "\n".join(lines)
 

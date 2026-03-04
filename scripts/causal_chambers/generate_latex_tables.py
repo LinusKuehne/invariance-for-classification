@@ -169,6 +169,34 @@ def _load_min_acc(results_dir: str, dataset: str, n_obs: int) -> dict[str, np.nd
     return out
 
 
+def _load_subset_counts(
+    results_dir: str, dataset: str, n_obs: int
+) -> dict[str, tuple[float, float]]:
+    """Load SC subset counts and return mean (n_invariant, n_predictive) per csv method name.
+
+    Returns a dict mapping csv ensemble method names (e.g. "SC Residual(LR), pred=LR")
+    to (mean_n_invariant, mean_n_predictive) averaged over reps.
+    """
+    path = os.path.join(results_dir, dataset, f"OOD_sc_subsets_{dataset}_n{n_obs}.csv")
+    if not os.path.exists(path):
+        return {}
+
+    df = pd.read_csv(path)
+    if len(df) == 0:
+        return {}
+
+    out: dict[str, tuple[float, float]] = {}
+    for config_name, grp in df.groupby("sc_config"):
+        mean_inv = grp["n_invariant"].mean()
+        mean_pred_rf = grp["n_predictive_RF"].mean()
+        mean_pred_lr = grp["n_predictive_LR"].mean()
+        # Map to the csv ensemble method names used in the tables
+        for pred_clf, mean_pred in [("RF", mean_pred_rf), ("LR", mean_pred_lr)]:
+            csv_name = f"SC {config_name}, pred={pred_clf}"
+            out[csv_name] = (mean_inv, mean_pred)
+    return out
+
+
 def _fmt(mean: float, hw: float, decimals: int, bold: bool = False) -> str:
     """Format as $mean \\pm hw$ with given decimal places, optionally bold."""
     inner = f"{mean:.{decimals}f} \\pm {hw:.{decimals}f}"
@@ -256,9 +284,7 @@ def build_table1(
     lines: list[str] = []
     a = lines.append
 
-    a(r"\begin{table}[t]")
-    a(r"  \centering")
-    a(r"  \begin{tabular}{@{}lccc@{}}")
+    a(r"\begin{tabular}{@{}lccc@{}}")
     a(r"    \toprule")
     a(r"    Method")
     a(r"      & {Dataset 1a}")
@@ -303,23 +329,15 @@ def build_table1(
         a(f"    {latex_name}")
         a(f"      & {cells} \\\\")
 
-    a(r"    \bottomrule")
-    a(r"  \end{tabular}")
-    a(r"  \caption{%")
-    a(r"    Worst-case test accuracy (minimum over five test environments) for")
-    a(r"    stabilized classification (SC) configurations and baselines.")
-    a(r"    Entries show the mean $\pm$ half-width of a 95\% $t$-confidence")
-    a(f"    interval over 20 repetitions with $n = {n_obs}$ observations per")
-    a(r"    training environment.%")
-    a(r"  }")
-    a(r"  \label{tab:main-results}")
-    a(r"\end{table}")
+    a(r"  \bottomrule")
+    a(r"\end{tabular}")
 
     return "\n".join(lines)
 
 
 def _table2_row_pair(
     data: dict[str, dict[str, np.ndarray]],
+    subset_data: dict[str, dict[str, tuple[float, float]]],
     csv_ensemble: str,
     csv_best: str,
     latex_name: str,
@@ -327,7 +345,17 @@ def _table2_row_pair(
     spacing: str = r"\\[3pt]",
 ) -> list[str]:
     """Build the two-row block for one SC method in Table 2."""
-    ens_cells = " & ".join(_cell(data, ds, csv_ensemble, decimals) for ds in DATASETS)
+
+    def _ens_cell(ds: str) -> str:
+        """Ensemble cell: accuracy ± CI with subset counts appended."""
+        cell = _cell(data, ds, csv_ensemble, decimals)
+        counts = subset_data.get(ds, {}).get(csv_ensemble)
+        if counts is not None and cell != "---":
+            n_inv, n_pred = counts
+            cell += f" ({n_inv:.0f}/{n_pred:.0f})"
+        return cell
+
+    ens_cells = " & ".join(_ens_cell(ds) for ds in DATASETS)
     best_cells = " & ".join(_cell(data, ds, csv_best, decimals) for ds in DATASETS)
     return [
         f"    {latex_name}",
@@ -339,15 +367,16 @@ def _table2_row_pair(
 
 
 def build_table2(
-    data: dict[str, dict[str, np.ndarray]], decimals: int, n_obs: int
+    data: dict[str, dict[str, np.ndarray]],
+    subset_data: dict[str, dict[str, tuple[float, float]]],
+    decimals: int,
+    n_obs: int,
 ) -> str:
     """Build Table 2: ensemble vs best subset."""
     lines: list[str] = []
     a = lines.append
 
-    a(r"\begin{table}[t]")
-    a(r"  \centering")
-    a(r"  \begin{tabular}{@{}llccc@{}}")
+    a(r"\begin{tabular}{@{}llccc@{}}")
     a(r"    \toprule")
     a(r"    Method & Aggregation")
     a(r"      & {Dataset 1a}")
@@ -362,7 +391,9 @@ def build_table2(
     for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_LINEAR):
         sp = r"\\[4pt]" if i == len(TABLE2_LINEAR) - 1 else r"\\[3pt]"
         lines.extend(
-            _table2_row_pair(data, csv_ens, csv_best, latex_name, decimals, sp)
+            _table2_row_pair(
+                data, subset_data, csv_ens, csv_best, latex_name, decimals, sp
+            )
         )
 
     a(r"    %")
@@ -376,21 +407,13 @@ def build_table2(
     for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_NONLINEAR):
         sp = r"\\" if i == len(TABLE2_NONLINEAR) - 1 else r"\\[3pt]"
         lines.extend(
-            _table2_row_pair(data, csv_ens, csv_best, latex_name, decimals, sp)
+            _table2_row_pair(
+                data, subset_data, csv_ens, csv_best, latex_name, decimals, sp
+            )
         )
 
-    a(r"    \bottomrule")
-    a(r"  \end{tabular}")
-    a(r"  \caption{%")
-    a(r"    Ensemble versus single best invariant subset for all SC")
-    a(r"    configurations from Table~\ref{tab:main-results}.  ``Ensemble''")
-    a(r"    aggregates predictions across all predictive invariant subsets")
-    a(r"    (the default SC method); ``best subset'' uses only the single")
-    a(r"    most predictive invariant subset.  Entries show worst-case test")
-    a(f"    accuracy (mean $\\pm$ 95\\% CI, 20 repetitions, $n = {n_obs}$).%")
-    a(r"  }")
-    a(r"  \label{tab:appendix-ensemble-vs-best}")
-    a(r"\end{table}")
+    a(r"  \bottomrule")
+    a(r"\end{tabular}")
 
     return "\n".join(lines)
 
@@ -403,11 +426,13 @@ def build_table2(
 def main(results_dir: str, output: str, decimals: int, n_obs: int) -> None:
     # Load data for all datasets
     data: dict[str, dict[str, np.ndarray]] = {}
+    subset_data: dict[str, dict[str, tuple[float, float]]] = {}
     for ds in DATASETS:
         data[ds] = _load_min_acc(results_dir, ds, n_obs)
+        subset_data[ds] = _load_subset_counts(results_dir, ds, n_obs)
 
     table1 = build_table1(data, decimals, n_obs)
-    table2 = build_table2(data, decimals, n_obs)
+    table2 = build_table2(data, subset_data, decimals, n_obs)
 
     full = (
         "% =============================================================================\n"
