@@ -73,7 +73,7 @@ from invariance_for_classification.invariance_tests import (
     InvariantEnvironmentPredictionTest,
     InvariantResidualDistributionTest,
     TramGcmTest,
-    WGCMTest,
+    # WGCMTest,  # TODO: uncomment when adding WGCM back
 )
 from invariance_for_classification.rankings import loeo_regret
 
@@ -208,8 +208,8 @@ TEST_CONFIGS_PVALUE: list[tuple[str, Any]] = [
     ),
     ("TramGCM (LR)", lambda: TramGcmTest(test_classifier_type="LR")),
     ("TramGCM (RF)", lambda: TramGcmTest(test_classifier_type="RF")),
-    ("WGCM_est (xgb)", lambda: WGCMTest(method="est", beta=0.5)),
-    ("WGCM_fix (xgb)", lambda: WGCMTest(method="fix")),
+    # ("WGCM_est (xgb)", lambda: WGCMTest(method="est", beta=0.5)),  # TODO: uncomment
+    # ("WGCM_fix (xgb)", lambda: WGCMTest(method="fix")),            # TODO: uncomment
 ]
 
 LOEO_CONFIGS: list[tuple[str, Literal["RF", "LR"]]] = [
@@ -451,8 +451,8 @@ TABLE_NONLINEAR: list[tuple[str, str]] = [
     ("TramGCM (RF)", r"\quad \textsc{tram}-GCM(RF)"),
     ("DeLong (RF)", r"\quad ITP(RF)"),
     ("InvEnvPred (RF)", r"\quad IEP(RF)"),
-    ("WGCM_est (xgb)", r"\quad WGCM\textsubscript{est}"),
-    ("WGCM_fix (xgb)", r"\quad WGCM\textsubscript{fix}"),
+    # ("WGCM_est (xgb)", r"\quad WGCM\textsubscript{est}"),  # TODO: uncomment
+    # ("WGCM_fix (xgb)", r"\quad WGCM\textsubscript{fix}"),  # TODO: uncomment
     ("LOEO Regret (RF)", r"\quad LOEO(RF)"),
 ]
 
