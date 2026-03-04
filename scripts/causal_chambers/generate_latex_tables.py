@@ -324,30 +324,11 @@ def _table2_row_pair(
     csv_best: str,
     latex_name: str,
     decimals: int,
-    best_methods: dict[str, set[str]],
     spacing: str = r"\\[3pt]",
 ) -> list[str]:
     """Build the two-row block for one SC method in Table 2."""
-    ens_cells = " & ".join(
-        _cell(
-            data,
-            ds,
-            csv_ensemble,
-            decimals,
-            bold=(csv_ensemble in best_methods.get(ds, set())),
-        )
-        for ds in DATASETS
-    )
-    best_cells = " & ".join(
-        _cell(
-            data,
-            ds,
-            csv_best,
-            decimals,
-            bold=(csv_best in best_methods.get(ds, set())),
-        )
-        for ds in DATASETS
-    )
+    ens_cells = " & ".join(_cell(data, ds, csv_ensemble, decimals) for ds in DATASETS)
+    best_cells = " & ".join(_cell(data, ds, csv_best, decimals) for ds in DATASETS)
     return [
         f"    {latex_name}",
         "      & ensemble",
@@ -361,12 +342,6 @@ def build_table2(
     data: dict[str, dict[str, np.ndarray]], decimals: int, n_obs: int
 ) -> str:
     """Build Table 2: ensemble vs best subset."""
-    # Determine best per column across all ensemble + best methods
-    all_t2_csv: list[str] = []
-    for csv_ens, csv_best, _ in TABLE2_LINEAR + TABLE2_NONLINEAR:
-        all_t2_csv.extend([csv_ens, csv_best])
-    best = _find_best_methods(data, all_t2_csv)
-
     lines: list[str] = []
     a = lines.append
 
@@ -387,7 +362,7 @@ def build_table2(
     for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_LINEAR):
         sp = r"\\[4pt]" if i == len(TABLE2_LINEAR) - 1 else r"\\[3pt]"
         lines.extend(
-            _table2_row_pair(data, csv_ens, csv_best, latex_name, decimals, best, sp)
+            _table2_row_pair(data, csv_ens, csv_best, latex_name, decimals, sp)
         )
 
     a(r"    %")
@@ -401,7 +376,7 @@ def build_table2(
     for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_NONLINEAR):
         sp = r"\\" if i == len(TABLE2_NONLINEAR) - 1 else r"\\[3pt]"
         lines.extend(
-            _table2_row_pair(data, csv_ens, csv_best, latex_name, decimals, best, sp)
+            _table2_row_pair(data, csv_ens, csv_best, latex_name, decimals, sp)
         )
 
     a(r"    \bottomrule")
