@@ -855,7 +855,15 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         if not all_stats:
             return -np.inf
 
-        S_best = max(all_stats, key=lambda x: x["inv_score"])["subset"]
+        # Exclude the empty set when selecting S_best: its LOEO regret is
+        # trivially 0 (all environment-specific models collapse to the class
+        # prior), which would produce an unreasonably tight cutoff that filters
+        # out every meaningful subset.
+        non_empty = [s for s in all_stats if len(s["subset"]) > 0]
+        if non_empty:
+            S_best = max(non_empty, key=lambda x: x["inv_score"])["subset"]
+        else:
+            S_best = max(all_stats, key=lambda x: x["inv_score"])["subset"]
 
         seeds = self.random_state_.randint(
             0, np.iinfo(np.int32).max, size=self.n_bootstrap
