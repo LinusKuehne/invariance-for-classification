@@ -93,12 +93,14 @@ STABLE_BLANKETS: dict[str, list[str]] = {
     "1a": ["red", "green", "blue", "vis_3"],
     "1b": ["red", "green", "blue", "vis_3"],
     "2": ["red", "green", "blue"],
+    "2b": ["red", "green", "blue"],
 }
 
 NORMAL_COLS: dict[str, list[str]] = {
     "1a": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
     "1b": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
     "2": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
+    "2b": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
 }
 
 # SC invariance test configurations:
@@ -112,8 +114,8 @@ SC_CONFIGS: list[tuple[str, str, str | None]] = [
     ("Residual(LR)", "inv_residual", "LR"),
     ("TramGCM(RF)", "tram_gcm", "RF"),
     ("TramGCM(LR)", "tram_gcm", "LR"),
-    ("WGCM_est", "wgcm_est", None),
-    ("WGCM_fix", "wgcm_fix", None),
+    # ("WGCM_est", "wgcm_est", None),
+    # ("WGCM_fix", "wgcm_fix", None),
     ("LOEO(RF)", "loeo_regret", "RF"),
     ("LOEO(LR)", "loeo_regret", "LR"),
 ]
@@ -831,7 +833,7 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         default="1a",
-        choices=["1a", "1b", "2"],
+        choices=["1a", "1b", "2", "2b"],
         help="Dataset base name (default: 1a).",
     )
     parser.add_argument(
