@@ -362,39 +362,61 @@ def _run_one_rep(
     # --- p-value tests (parallelised over tests) ---
     test_names = [name for name, _ in TEST_CONFIGS_PVALUE]
 
+    n_total = len(test_names) + len(LOEO_CONFIGS)
+
     if n_workers == 1:
         for tname in test_names:
             r = _run_pvalue_test_on_all_subsets(
                 tname, df_train, all_subsets, invariant_subsets
             )
             results.append({"rep": rep, **r})
+            print(f"    ✓ {tname} done (AUC={r['auc']:.4f})", flush=True)
+        for display_name, clf_type in LOEO_CONFIGS:
+            r = _run_loeo_on_all_subsets(
+                display_name, clf_type, df_train, all_subsets, invariant_subsets
+            )
+            results.append({"rep": rep, **r})
+            print(f"    ✓ {display_name} done (AUC={r['auc']:.4f})", flush=True)
     else:
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {
-                executor.submit(
+            futures: dict = {}
+            # submit p-value tests
+            for tname in test_names:
+                fut = executor.submit(
                     _run_pvalue_test_on_all_subsets,
                     tname,
                     df_train,
                     all_subsets,
                     invariant_subsets,
-                ): tname
-                for tname in test_names
-            }
+                )
+                futures[fut] = tname
+            # submit LOEO regret tasks into the same pool
+            for display_name, clf_type in LOEO_CONFIGS:
+                fut = executor.submit(
+                    _run_loeo_on_all_subsets,
+                    display_name,
+                    clf_type,
+                    df_train,
+                    all_subsets,
+                    invariant_subsets,
+                )
+                futures[fut] = display_name
+
+            done_count = 0
             for future in as_completed(futures):
                 tname = futures[future]
+                done_count += 1
                 try:
                     r = future.result()
                     results.append({"rep": rep, **r})
+                    print(
+                        f"    ✓ {tname} done ({done_count}/{n_total}, "
+                        f"AUC={r['auc']:.4f})",
+                        flush=True,
+                    )
                 except Exception as e:
-                    print(f"  Error in {tname}: {e}")
+                    print(f"    ✗ {tname} FAILED ({done_count}/{n_total}): {e}")
                     results.append({"rep": rep, "test_name": tname, "auc": np.nan})
-
-    # --- LOEO regret (sequential – already fast per subset) ---
-    for display_name, clf_type in LOEO_CONFIGS:
-        r = _run_loeo_on_all_subsets(
-            display_name, clf_type, df_train, all_subsets, invariant_subsets
-        )
-        results.append({"rep": rep, **r})
 
     return results
 
