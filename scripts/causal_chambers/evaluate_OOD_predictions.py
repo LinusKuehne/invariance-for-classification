@@ -81,7 +81,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from baselines import IRMLinearClassifier, IRMNNClassifier
 
-from invariance_for_classification import StabilizedClassificationClassifier
+from invariance_for_classification import (
+    MaxRMRFClassifier,
+    StabilizedClassificationClassifier,
+)
 
 # =============================================================================
 # global configuration
@@ -107,17 +110,17 @@ NORMAL_COLS: dict[str, list[str]] = {
 # (display_name, invariance_test, test_classifier_type or None)
 # Limited to those appearing in the paper tables (CRT omitted).
 SC_CONFIGS: list[tuple[str, str, str | None]] = [
-    ("DeLong(RF)", "delong", "RF"),
-    ("DeLong(LR)", "delong", "LR"),
-    ("InvEnvPred(RF)", "inv_env_pred", "RF"),
-    ("Residual(RF)", "inv_residual", "RF"),
-    ("Residual(LR)", "inv_residual", "LR"),
+    # ("DeLong(RF)", "delong", "RF"),
+    # ("DeLong(LR)", "delong", "LR"),
+    # ("InvEnvPred(RF)", "inv_env_pred", "RF"),
+    # ("Residual(RF)", "inv_residual", "RF"),
+    # ("Residual(LR)", "inv_residual", "LR"),
     ("TramGCM(RF)", "tram_gcm", "RF"),
     ("TramGCM(LR)", "tram_gcm", "LR"),
     # ("WGCM_est", "wgcm_est", None),
     # ("WGCM_fix", "wgcm_fix", None),
-    ("LOEO(RF)", "loeo_regret", "RF"),
-    ("LOEO(LR)", "loeo_regret", "LR"),
+    # ("LOEO(RF)", "loeo_regret", "RF"),
+    # ("LOEO(LR)", "loeo_regret", "LR"),
 ]
 
 
@@ -258,9 +261,9 @@ def _run_sc_config(
     kwargs: dict = {
         "alpha_inv": 0.05,
         "alpha_pred": 0.05,
-        "pred_classifier_type": ["RF", "LR"],
+        "pred_classifier_type": ["MaxRM-RF"],
         "invariance_test": invariance_test,
-        "pred_scoring": "mean",
+        "pred_scoring": "worst_case",
         "n_bootstrap": 250,
         "verbose": 1 if verbose else 0,
         "n_jobs": n_jobs,
@@ -281,13 +284,14 @@ def _run_sc_config(
             "rep": rep,
             "sc_config": config_name,
             "n_invariant": n_inv,
-            "n_predictive_RF": n_pred["RF"] if isinstance(n_pred, dict) else n_pred,
-            "n_predictive_LR": n_pred["LR"] if isinstance(n_pred, dict) else n_pred,
+            "n_predictive_MaxRM-RF": n_pred["MaxRM-RF"]
+            if isinstance(n_pred, dict)
+            else n_pred,
         }
     ]
 
     result_rows: list[dict] = []
-    for pred_clf in ["RF", "LR"]:
+    for pred_clf in ["MaxRM-RF"]:
         for method_label, method_kwarg in [("ensemble", "ensemble"), ("best", "best")]:
             if method_label == "ensemble":
                 method_name = f"SC {config_name}, pred={pred_clf}"
@@ -310,6 +314,30 @@ def _run_sc_config(
 # =============================================================================
 # baseline runners
 # =============================================================================
+
+
+def _run_maxrm_rf(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    E_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    E_test: np.ndarray,
+    rep: int,
+    rep_seed: int,
+) -> list[dict]:
+    """Fit and evaluate standalone MaxRM-RF (posthoc) baseline."""
+    clf = MaxRMRFClassifier(
+        n_estimators=100,
+        min_samples_leaf=5,
+        max_features="sqrt",
+        random_state=rep_seed,
+    )
+    clf.fit(X_train, y_train, environment=E_train)
+    y_prob = _extract_positive_proba(clf.predict_proba(X_test))
+    y_pred = np.asarray(clf.predict(X_test))
+    per_env = _per_env_metrics(y_test, y_prob, y_pred, E_test)
+    return _rows_from_per_env(per_env, "MaxRM-RF (posthoc)", rep)
 
 
 def _run_erm_rf(
@@ -525,38 +553,34 @@ def compute_summary(
     if os.path.exists(sc_subsets_path):
         sc_df = pd.read_csv(sc_subsets_path)
         if len(sc_df) > 0:
+            agg_cols = {
+                "n_invariant": "mean",
+                "n_predictive_MaxRM-RF": "mean",
+            }
+            rename_cols = {
+                "n_invariant": "mean_n_invariant",
+                "n_predictive_MaxRM-RF": "mean_n_predictive_MaxRM-RF",
+            }
             subset_means = (
                 sc_df.groupby("sc_config")
-                .agg(
-                    {
-                        "n_invariant": "mean",
-                        "n_predictive_RF": "mean",
-                        "n_predictive_LR": "mean",
-                    }
-                )
+                .agg(agg_cols)
                 .reset_index()
-                .rename(
-                    columns={
-                        "n_invariant": "mean_n_invariant",
-                        "n_predictive_RF": "mean_n_predictive_RF",
-                        "n_predictive_LR": "mean_n_predictive_LR",
-                    }
-                )
+                .rename(columns=rename_cols)
             )
             # SC methods follow the pattern "SC <config_name>, pred=<clf>"
-            # map each config to its two method names
+            # map each config to its method names
             sc_merge_rows = []
             for _, srow in subset_means.iterrows():
                 config = srow["sc_config"]
-                for pred_clf in ["RF", "LR"]:
-                    sc_merge_rows.append(
-                        {
-                            "method": f"SC {config}, pred={pred_clf}",
-                            "mean_n_invariant": srow["mean_n_invariant"],
-                            "mean_n_predictive_RF": srow["mean_n_predictive_RF"],
-                            "mean_n_predictive_LR": srow["mean_n_predictive_LR"],
-                        }
-                    )
+                for pred_clf in ["MaxRM-RF"]:
+                    row_data = {
+                        "method": f"SC {config}, pred={pred_clf}",
+                        "mean_n_invariant": srow["mean_n_invariant"],
+                        "mean_n_predictive_MaxRM-RF": srow[
+                            "mean_n_predictive_MaxRM-RF"
+                        ],
+                    }
+                    sc_merge_rows.append(row_data)
             sc_merge_df = pd.DataFrame(sc_merge_rows)
             summary_df = summary_df.merge(sc_merge_df, on="method", how="left")
 
@@ -687,28 +711,15 @@ def main(
             _append_to_csv(pd.DataFrame(subset_rows), sc_subsets_path)
             print(f"done ({time.time() - t0:.1f}s)")
 
-        # ── ERM baselines ─────────────────────────────────────────────
-        _baseline_tasks = [
+        # ── MaxRM-RF baseline ─────────────────────────────────────────
+        _baseline_tasks: list = [
             (
-                "ERM RF",
-                _run_erm_rf,
+                "MaxRM-RF (posthoc)",
+                _run_maxrm_rf,
                 dict(
                     X_train=X_train,
                     y_train=y_train,
-                    X_test=X_test,
-                    y_test=y_test,
-                    E_test=E_test,
-                    rep=rep,
-                    rep_seed=rep_seed,
-                    n_jobs=n_jobs,
-                ),
-            ),
-            (
-                "ERM LR",
-                _run_erm_lr,
-                dict(
-                    X_train=X_train,
-                    y_train=y_train,
+                    E_train=E_train,
                     X_test=X_test,
                     y_test=y_test,
                     E_test=E_test,
@@ -718,79 +729,110 @@ def main(
             ),
         ]
 
+        # ── ERM baselines ─────────────────────────────────────────────
+        # _baseline_tasks = [
+        #     (
+        #         "ERM RF",
+        #         _run_erm_rf,
+        #         dict(
+        #             X_train=X_train,
+        #             y_train=y_train,
+        #             X_test=X_test,
+        #             y_test=y_test,
+        #             E_test=E_test,
+        #             rep=rep,
+        #             rep_seed=rep_seed,
+        #             n_jobs=n_jobs,
+        #         ),
+        #     ),
+        #     (
+        #         "ERM LR",
+        #         _run_erm_lr,
+        #         dict(
+        #             X_train=X_train,
+        #             y_train=y_train,
+        #             X_test=X_test,
+        #             y_test=y_test,
+        #             E_test=E_test,
+        #             rep=rep,
+        #             rep_seed=rep_seed,
+        #         ),
+        #     ),
+        # ]
+
         # ── oracle baselines ──────────────────────────────────────────
-        if stable_indices is not None and len(stable_indices) > 0:
-            _baseline_tasks.extend(
-                [
-                    (
-                        "Oracle RF",
-                        _run_oracle_rf,
-                        dict(
-                            X_train=X_train,
-                            y_train=y_train,
-                            X_test=X_test,
-                            y_test=y_test,
-                            E_test=E_test,
-                            stable_indices=stable_indices,
-                            rep=rep,
-                            rep_seed=rep_seed,
-                            n_jobs=n_jobs,
-                        ),
-                    ),
-                    (
-                        "Oracle LR",
-                        _run_oracle_lr,
-                        dict(
-                            X_train=X_train,
-                            y_train=y_train,
-                            X_test=X_test,
-                            y_test=y_test,
-                            E_test=E_test,
-                            stable_indices=stable_indices,
-                            rep=rep,
-                            rep_seed=rep_seed,
-                        ),
-                    ),
-                ]
-            )
+        # if stable_indices is not None and len(stable_indices) > 0:
+        #     _baseline_tasks.extend(
+        #         [
+        #             (
+        #                 "Oracle RF",
+        #                 _run_oracle_rf,
+        #                 dict(
+        #                     X_train=X_train,
+        #                     y_train=y_train,
+        #                     X_test=X_test,
+        #                     y_test=y_test,
+        #                     E_test=E_test,
+        #                     stable_indices=stable_indices,
+        #                     rep=rep,
+        #                     rep_seed=rep_seed,
+        #                     n_jobs=n_jobs,
+        #                 ),
+        #             ),
+        #             (
+        #                 "Oracle LR",
+        #                 _run_oracle_lr,
+        #                 dict(
+        #                     X_train=X_train,
+        #                     y_train=y_train,
+        #                     X_test=X_test,
+        #                     y_test=y_test,
+        #                     E_test=E_test,
+        #                     stable_indices=stable_indices,
+        #                     rep=rep,
+        #                     rep_seed=rep_seed,
+        #                 ),
+        #             ),
+        #         ]
+        #     )
 
         # ── IRM baselines ─────────────────────────────────────────────
-        _baseline_tasks.extend(
-            [
-                (
-                    "IRM-NN",
-                    _run_irm_nn,
-                    dict(
-                        X_train=X_train,
-                        y_train=y_train,
-                        E_train=E_train,
-                        X_test=X_test,
-                        y_test=y_test,
-                        E_test=E_test,
-                        rep=rep,
-                        rep_seed=rep_seed,
-                        n_jobs=n_jobs,
-                        verbose=verbose,
-                    ),
-                ),
-                (
-                    "IRM-Linear",
-                    _run_irm_linear,
-                    dict(
-                        X_train=X_train,
-                        y_train=y_train,
-                        E_train=E_train,
-                        X_test=X_test,
-                        y_test=y_test,
-                        E_test=E_test,
-                        rep=rep,
-                        rep_seed=rep_seed,
-                        n_jobs=n_jobs,
-                        verbose=verbose,
-                    ),
-                ),
-            ]
-        )
+        # _baseline_tasks.extend(
+        #     [
+        #         (
+        #             "IRM-NN",
+        #             _run_irm_nn,
+        #             dict(
+        #                 X_train=X_train,
+        #                 y_train=y_train,
+        #                 E_train=E_train,
+        #                 X_test=X_test,
+        #                 y_test=y_test,
+        #                 E_test=E_test,
+        #                 rep=rep,
+        #                 rep_seed=rep_seed,
+        #                 n_jobs=n_jobs,
+        #                 verbose=verbose,
+        #             ),
+        #         ),
+        #         (
+        #             "IRM-Linear",
+        #             _run_irm_linear,
+        #             dict(
+        #                 X_train=X_train,
+        #                 y_train=y_train,
+        #                 E_train=E_train,
+        #                 X_test=X_test,
+        #                 y_test=y_test,
+        #                 E_test=E_test,
+        #                 rep=rep,
+        #                 rep_seed=rep_seed,
+        #                 n_jobs=n_jobs,
+        #                 verbose=verbose,
+        #             ),
+        #         ),
+        #     ]
+        # )
 
         for bname, bfunc, bkwargs in _baseline_tasks:
             t0 = time.time()

@@ -15,6 +15,7 @@ from sklearn.utils import check_random_state, resample
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
 from ..rankings import loeo_regret
+from ._maxrm_rf import MaxRMRFClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +48,27 @@ class _EmptySetClassifier(BaseEstimator, ClassifierMixin):
         return (proba[:, 1] >= 0.5).astype(int)
 
 
-def _fit_model_helper(X: np.ndarray, y: np.ndarray, pred_classifier):
-    """Helper to fit a model on a subset of features (handles empty sets)."""
+def _fit_model_helper(
+    X: np.ndarray,
+    y: np.ndarray,
+    pred_classifier,
+    environment: Optional[np.ndarray] = None,
+):
+    """Helper to fit a model on a subset of features (handles empty sets).
+
+    When *pred_classifier* is a :class:`MaxRMRFClassifier` and *environment*
+    is provided, the environment labels are forwarded to ``fit()``.
+    """
     if X.shape[1] == 0:
         model = _EmptySetClassifier()
-    else:
-        model = clone(pred_classifier)
+        model.fit(X, y)
+        return model
 
-    model.fit(X, y)
+    model = clone(pred_classifier)
+    if isinstance(model, MaxRMRFClassifier) and environment is not None:
+        model.fit(X, y, environment=environment)
+    else:
+        model.fit(X, y)
     return model
 
 
@@ -88,16 +102,34 @@ def _fit_and_score(X_S, y, environment, pred_classifier, pred_scoring="mean"):
         return model, score
 
     is_rf = isinstance(pred_classifier, RandomForestClassifier)
+    is_maxrm = isinstance(pred_classifier, MaxRMRFClassifier)
 
     # get out-of-sample predictions and fitted model
     if is_rf:
-        model = clone(pred_classifier)
-        model.set_params(oob_score=True)
-        model = _fit_model_helper(X_S, y, model)
-        y_pred = model.oob_decision_function_
+        rf_model: RandomForestClassifier = clone(pred_classifier)  # type: ignore[assignment]
+        rf_model.set_params(oob_score=True)
+        rf_model = _fit_model_helper(X_S, y, rf_model)  # type: ignore[assignment]
+        y_pred = rf_model.oob_decision_function_
         if np.isnan(y_pred).any():
-            fallback = model.predict_proba(X_S)
+            fallback = rf_model.predict_proba(X_S)
             y_pred = np.where(np.isnan(y_pred), fallback, y_pred)
+        model = rf_model
+    elif is_maxrm:
+        # For scoring: use a standard sklearn RF with OOB so that the
+        # predictiveness cutoff is comparable across classifier types.
+        scoring_rf = RandomForestClassifier(
+            n_estimators=pred_classifier.n_estimators,
+            oob_score=True,
+            random_state=pred_classifier.random_state,
+            n_jobs=1,
+        )
+        scoring_rf.fit(X_S, y)
+        y_pred = scoring_rf.oob_decision_function_
+        if np.isnan(y_pred).any():
+            fallback = scoring_rf.predict_proba(X_S)
+            y_pred = np.where(np.isnan(y_pred), fallback, y_pred)
+        # For model: fit the actual MaxRM-RF with environment labels
+        model = _fit_model_helper(X_S, y, pred_classifier, environment=environment)
     else:
         y_pred = cross_val_predict(
             clone(pred_classifier),
@@ -230,7 +262,15 @@ def _bootstrap_predictiveness_worker(
     bs_model = clone(pred_classifier)
     if isinstance(bs_model, RandomForestClassifier):
         bs_model.set_params(oob_score=False)
-    bs_model = _fit_model_helper(X_S_train, y[indices], bs_model)
+
+    # MaxRM-RF needs environment labels at fit time
+    if isinstance(bs_model, MaxRMRFClassifier) and environment is not None:
+        env_train = environment[indices]
+        bs_model = _fit_model_helper(
+            X_S_train, y[indices], bs_model, environment=env_train
+        )
+    else:
+        bs_model = _fit_model_helper(X_S_train, y[indices], bs_model)
 
     y_pred = bs_model.predict_proba(X_S_test)
     env_oob = environment[oob_indices] if environment is not None else None
@@ -305,10 +345,11 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
     pred_classifier_type : str or list[str], default="RF"
         Classifier type(s) to use for making predictions.
-        "RF" for random forest, "LR" for logistic regression.
-        When a list is given (e.g. ``["RF", "LR"]``), invariance scores are
-        computed once and prediction models are fitted for each type
-        separately. Use the ``pred_classifier_type`` argument in
+        "RF" for random forest, "LR" for logistic regression,
+        "MaxRM-RF" for MaxRM Random Forest (posthoc Brier-score variant).
+        When a list is given (e.g. ``["RF", "LR", "MaxRM-RF"]``), invariance
+        scores are computed once and prediction models are fitted for each
+        type separately. Use the ``pred_classifier_type`` argument in
         ``predict`` / ``predict_proba`` to select which classifier's
         predictions to use.
 
@@ -779,9 +820,18 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
                     ),
                 ]
             )
+        elif clf_type == "MaxRM-RF":
+            return MaxRMRFClassifier(
+                n_estimators=100,
+                random_state=self.random_state,
+                min_samples_leaf=5,
+                max_features="sqrt",
+                n_jobs_maxrm=1,
+            )
         else:
             raise ValueError(
-                f"Unknown pred_classifier_type: {clf_type}. Choose from 'RF', 'LR'."
+                f"Unknown pred_classifier_type: {clf_type}. "
+                "Choose from 'RF', 'LR', 'MaxRM-RF'."
             )
 
     def _setup_inv_test(self):

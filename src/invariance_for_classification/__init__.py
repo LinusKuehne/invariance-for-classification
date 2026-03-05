@@ -1,4 +1,4 @@
-from .estimators import StabilizedClassificationClassifier
+from .estimators import MaxRMRFClassifier, StabilizedClassificationClassifier
 from .invariance_tests import (
     ConditionalRandomizationTest,
     DeLongTest,
@@ -13,6 +13,7 @@ __all__ = [
     "DeLongTest",
     "InvariantEnvironmentPredictionTest",
     "InvariantResidualDistributionTest",
+    "MaxRMRFClassifier",
     "StabilizedClassificationClassifier",
     "TramGcmTest",
     "WGCMTest",
