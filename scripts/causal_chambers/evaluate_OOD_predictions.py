@@ -58,6 +58,7 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -93,31 +94,29 @@ STABLE_BLANKETS: dict[str, list[str]] = {
     "1a": ["red", "green", "blue", "vis_3"],
     "1b": ["red", "green", "blue", "vis_3"],
     "2": ["red", "green", "blue"],
-    "2b": ["red", "green", "blue"],
 }
 
 NORMAL_COLS: dict[str, list[str]] = {
     "1a": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
     "1b": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
     "2": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
-    "2b": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
 }
 
 # SC invariance test configurations:
 # (display_name, invariance_test, test_classifier_type or None)
 # Limited to those appearing in the paper tables (CRT omitted).
 SC_CONFIGS: list[tuple[str, str, str | None]] = [
-    ("DeLong(RF)", "delong", "RF"),
-    ("DeLong(LR)", "delong", "LR"),
-    ("InvEnvPred(RF)", "inv_env_pred", "RF"),
+    # ("DeLong(RF)", "delong", "RF"),
+    # ("DeLong(LR)", "delong", "LR"),
+    # ("InvEnvPred(RF)", "inv_env_pred", "RF"),
     ("Residual(RF)", "inv_residual", "RF"),
     ("Residual(LR)", "inv_residual", "LR"),
-    ("TramGCM(RF)", "tram_gcm", "RF"),
-    ("TramGCM(LR)", "tram_gcm", "LR"),
+    # ("TramGCM(RF)", "tram_gcm", "RF"),
+    # ("TramGCM(LR)", "tram_gcm", "LR"),
     # ("WGCM_est", "wgcm_est", None),
     # ("WGCM_fix", "wgcm_fix", None),
-    ("LOEO(RF)", "loeo_regret", "RF"),
-    ("LOEO(LR)", "loeo_regret", "LR"),
+    # ("LOEO(RF)", "loeo_regret", "RF"),
+    # ("LOEO(LR)", "loeo_regret", "LR"),
 ]
 
 
@@ -196,9 +195,7 @@ def _per_env_metrics(
             )
         )
         acc = float(accuracy_score(y_true[mask], y_pred[mask]))
-        records.append(
-            {"env": int(e), "bce_loss": bce, "accuracy": acc, "n": int(mask.sum())}
-        )
+        records.append({"env": int(e), "bce_loss": bce, "accuracy": acc})
     return records
 
 
@@ -213,7 +210,6 @@ def _rows_from_per_env(per_env: list[dict], method: str, rep: int) -> list[dict]
                 "env": r["env"],
                 "accuracy": r["accuracy"],
                 "bce_loss": r["bce_loss"],
-                "n": r["n"],
             }
         )
     return rows
@@ -230,6 +226,11 @@ def _append_to_csv(df: pd.DataFrame, filepath: str) -> None:
 # =============================================================================
 
 
+def _subsets_to_json(subsets: list[dict], feature_names: list[str]) -> str:
+    """Serialize a list of subset dicts to a JSON string of feature-name lists."""
+    return json.dumps([[feature_names[i] for i in s["subset"]] for s in subsets])
+
+
 def _run_sc_config(
     config_name: str,
     invariance_test: str,
@@ -240,6 +241,7 @@ def _run_sc_config(
     X_test: np.ndarray,
     y_test: np.ndarray,
     E_test: np.ndarray,
+    feature_names: list[str],
     n_jobs: int,
     rep: int,
     rep_seed: int,
@@ -253,7 +255,7 @@ def _run_sc_config(
     result_rows : list[dict]
         Per-environment results for each (config, pred_clf) combination.
     subset_rows : list[dict]
-        Subset count info for this config.
+        Subset count info for this config, including the actual feature subsets.
     """
     kwargs: dict = {
         "alpha_inv": 0.05,
@@ -276,6 +278,19 @@ def _run_sc_config(
     n_inv = clf.n_invariant_subsets_
     n_pred = clf.n_predictive_subsets_  # dict[str, int] when list was passed
 
+    # extract actual subsets as JSON strings of feature names
+    # invariant subsets: same for all classifiers (shared invariance filter)
+    all_inv = clf._all_invariant_fitted_
+    all_inv_list: list[dict] = (
+        next(iter(all_inv.values())) if isinstance(all_inv, dict) else all_inv
+    )
+    subsets_invariant = _subsets_to_json(all_inv_list, feature_names)
+
+    active_rf: list[dict] = clf.active_subsets_["RF"]  # type: ignore[index]
+    active_lr: list[dict] = clf.active_subsets_["LR"]  # type: ignore[index]
+    subsets_predictive_rf = _subsets_to_json(active_rf, feature_names)
+    subsets_predictive_lr = _subsets_to_json(active_lr, feature_names)
+
     subset_rows = [
         {
             "rep": rep,
@@ -283,6 +298,9 @@ def _run_sc_config(
             "n_invariant": n_inv,
             "n_predictive_RF": n_pred["RF"] if isinstance(n_pred, dict) else n_pred,
             "n_predictive_LR": n_pred["LR"] if isinstance(n_pred, dict) else n_pred,
+            "subsets_invariant": subsets_invariant,
+            "subsets_predictive_RF": subsets_predictive_rf,
+            "subsets_predictive_LR": subsets_predictive_lr,
         }
     ]
 
@@ -678,6 +696,7 @@ def main(
                 X_test=X_test,
                 y_test=y_test,
                 E_test=E_test,
+                feature_names=features,
                 n_jobs=n_jobs,
                 rep=rep,
                 rep_seed=rep_seed,
@@ -833,7 +852,7 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         default="1a",
-        choices=["1a", "1b", "2", "2b"],
+        choices=["1a", "1b", "2"],
         help="Dataset base name (default: 1a).",
     )
     parser.add_argument(
