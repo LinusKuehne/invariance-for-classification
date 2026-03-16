@@ -106,17 +106,17 @@ NORMAL_COLS: dict[str, list[str]] = {
 # (display_name, invariance_test, test_classifier_type or None)
 # Limited to those appearing in the paper tables (CRT omitted).
 SC_CONFIGS: list[tuple[str, str, str | None]] = [
-    # ("DeLong(RF)", "delong", "RF"),
-    # ("DeLong(LR)", "delong", "LR"),
-    # ("InvEnvPred(RF)", "inv_env_pred", "RF"),
+    ("DeLong(RF)", "delong", "RF"),
+    ("DeLong(LR)", "delong", "LR"),
+    ("InvEnvPred(RF)", "inv_env_pred", "RF"),
     ("Residual(RF)", "inv_residual", "RF"),
     ("Residual(LR)", "inv_residual", "LR"),
-    # ("TramGCM(RF)", "tram_gcm", "RF"),
-    # ("TramGCM(LR)", "tram_gcm", "LR"),
-    # ("WGCM_est", "wgcm_est", None),
-    # ("WGCM_fix", "wgcm_fix", None),
-    # ("LOEO(RF)", "loeo_regret", "RF"),
-    # ("LOEO(LR)", "loeo_regret", "LR"),
+    ("TramGCM(RF)", "tram_gcm", "RF"),
+    ("TramGCM(LR)", "tram_gcm", "LR"),
+    ("WGCM_est", "wgcm_est", None),
+    ("WGCM_fix", "wgcm_fix", None),
+    ("LOEO(RF)", "loeo_regret", "RF"),
+    ("LOEO(LR)", "loeo_regret", "LR"),
 ]
 
 
@@ -224,11 +224,6 @@ def _append_to_csv(df: pd.DataFrame, filepath: str) -> None:
 # =============================================================================
 # SC configuration runner
 # =============================================================================
-
-
-def _subsets_to_json(subsets: list[dict], feature_names: list[str]) -> str:
-    """Serialize a list of subset dicts to a JSON string of feature-name lists."""
-    return json.dumps([[feature_names[i] for i in s["subset"]] for s in subsets])
 
 
 def _run_sc_config(
@@ -526,8 +521,9 @@ def compute_summary(
         envs = sorted(m_env["env"].unique())
         for env in envs:
             env_data = m_env[m_env["env"] == env]
-            acc_vals = env_data["accuracy"].to_numpy()
-            bce_vals = env_data["bce_loss"].to_numpy()
+            # Average over duplicates (if any) to ensure exactly one value per rep
+            acc_vals = env_data.groupby("rep")["accuracy"].mean().to_numpy()
+            bce_vals = env_data.groupby("rep")["bce_loss"].mean().to_numpy()
             row[f"acc_env{env}_mean"] = (
                 float(np.mean(acc_vals)) if len(acc_vals) > 0 else float("nan")
             )
@@ -602,13 +598,11 @@ def main(
     # ── reproducibility ──────────────────────────────────────────────────
     # No global np.random.seed(): every method receives its own rep_seed
     # and subsampling uses np.random.default_rng(rep_seed).
-    # Only torch needs a global seed for deterministic CUDA behaviour.
+    # Torch is seeded per-repetition in the main loop to ensure exact
+    # isolation, but we enforce deterministic algorithms globally here.
     try:
         import torch
 
-        torch.manual_seed(SEED)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(SEED)
         torch.backends.cudnn.deterministic = True  # type: ignore[attr-defined]
         torch.backends.cudnn.benchmark = False  # type: ignore[attr-defined]
     except ImportError:
@@ -671,6 +665,16 @@ def main(
     for rep in range(n_reps):
         rep_seed = SEED + rep
         rng = np.random.default_rng(rep_seed)
+
+        # Seed torch per repetition for true isolation
+        try:
+            import torch
+
+            torch.manual_seed(rep_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(rep_seed)
+        except ImportError:
+            pass
 
         print(f"\n{'─' * 70}")
         print(f"Repetition {rep + 1}/{n_reps}  (seed={rep_seed})")

@@ -171,7 +171,7 @@ TABLE_LINEAR: list[tuple[str, str]] = [
     ("Residual (LR)", r"\quad IRD(LR)"),
     ("TramGCM (LR)", r"\quad \textsc{tram}-GCM(LR)"),
     ("DeLong (LR)", r"\quad ITP(LR)"),
-    ("LOEO Regret (LR)", r"\quad LOEO(LR)"),
+    ("LOEO (LR)", r"\quad LOEO(LR)"),
 ]
 
 TABLE_NONLINEAR: list[tuple[str, str]] = [
@@ -179,9 +179,9 @@ TABLE_NONLINEAR: list[tuple[str, str]] = [
     ("TramGCM (RF)", r"\quad \textsc{tram}-GCM(RF)"),
     ("DeLong (RF)", r"\quad ITP(RF)"),
     ("InvEnvPred (RF)", r"\quad IEP(RF)"),
-    # ("WGCM_est (xgb)", r"\quad WGCM\textsubscript{est}"),
-    # ("WGCM_fix (xgb)", r"\quad WGCM\textsubscript{fix}"),
-    ("LOEO Regret (RF)", r"\quad LOEO(RF)"),
+    # ("WGCM_est", r"\quad WGCM\textsubscript{est}"),
+    # ("WGCM_fix", r"\quad WGCM\textsubscript{fix}"),
+    ("LOEO (RF)", r"\quad LOEO(RF)"),
 ]
 
 
