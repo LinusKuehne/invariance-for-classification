@@ -423,16 +423,143 @@ def build_table2(
 # =============================================================================
 
 
+# =============================================================================
+# per-environment accuracy table
+# =============================================================================
+
+# Methods to include in the per-environment table, in column order.
+# Tuple: (csv_name, short LaTeX label)
+ENV_TABLE_METHODS: list[tuple[str, str]] = [
+    ("SC TramGCM(LR), pred=LR", r"SC-\textsc{tram}-GCM(LR)"),
+    ("SC TramGCM(RF), pred=RF", r"SC-\textsc{tram}-GCM(RF)"),
+    ("ERM LR", r"ERM-LR"),
+    ("ERM RF", r"ERM-RF"),
+    ("IRM-Linear", r"IRM-Linear"),
+    ("IRM-NN", r"IRM-NN"),
+    ("Oracle LR", r"Oracle-LR"),
+    ("Oracle RF", r"Oracle-RF"),
+]
+
+
+def _load_env_acc(
+    results_dir: str, dataset: str, n_obs: int
+) -> dict[str, dict[int, np.ndarray]]:
+    """
+    Return {method: {env: array_of_acc_over_reps}}.
+    """
+    path = os.path.join(results_dir, dataset, f"OOD_raw_{dataset}_n{n_obs}.csv")
+    if not os.path.exists(path):
+        return {}
+    df = pd.read_csv(path)
+    out: dict[str, dict[int, np.ndarray]] = {}
+    for method in df["method"].unique():
+        m = df[df["method"] == method]
+        env_dict: dict[int, np.ndarray] = {}
+        for env in sorted(m["env"].unique()):
+            env_dict[int(env)] = m[m["env"] == env]["accuracy"].to_numpy()
+        out[method] = env_dict
+    return out
+
+
+def _env_cell(
+    env_data: dict[str, dict[int, np.ndarray]],
+    method: str,
+    env: int,
+    decimals: int,
+    bold: bool = False,
+) -> str:
+    """Produce one table cell (mean ± CI) for a given method and environment."""
+    vals = env_data.get(method, {}).get(env)
+    if vals is None or len(vals) == 0:
+        return "---"
+    mean = float(np.mean(vals))
+    hw = _ci_half_width(vals)
+    return _fmt(mean, hw, decimals, bold=bold)
+
+
+def build_env_acc_table(
+    env_data: dict[str, dict[int, np.ndarray]],
+    dataset: str,
+    decimals: int,
+) -> str:
+    """Build a per-environment accuracy table for one dataset."""
+    # Collect all test environments present in the data
+    all_envs: set[int] = set()
+    for method_envs in env_data.values():
+        all_envs.update(method_envs.keys())
+    envs = sorted(all_envs)
+
+    n_methods = len(ENV_TABLE_METHODS)
+    col_spec = "@{}l" + "c" * n_methods + "@{}"
+
+    lines: list[str] = []
+    a = lines.append
+
+    a(rf"\begin{{tabular}}{{{col_spec}}}")
+    a(r"    \toprule")
+
+    # Header row
+    header_cells = " & ".join(
+        rf"\rotatebox{{90}}{{\strut {lname}}}" for _, lname in ENV_TABLE_METHODS
+    )
+    a(rf"    Test env & {header_cells} \\")
+    a(r"    \midrule")
+
+    # For each environment, find the best non-oracle value to bold
+    oracle_methods = {"Oracle LR", "Oracle RF"}
+    non_oracle_csv = [csv for csv, _ in ENV_TABLE_METHODS if csv not in oracle_methods]
+
+    for env in envs:
+        # find best among non-oracle methods for this env
+        best_val = -1.0
+        for csv_name in non_oracle_csv:
+            vals = env_data.get(csv_name, {}).get(env)
+            if vals is not None and len(vals) > 0:
+                v = float(np.mean(vals))
+                if v > best_val:
+                    best_val = v
+
+        cells: list[str] = []
+        for csv_name, _ in ENV_TABLE_METHODS:
+            vals = env_data.get(csv_name, {}).get(env)
+            mean_v = (
+                float(np.mean(vals)) if vals is not None and len(vals) > 0 else None
+            )
+            is_best = (
+                csv_name not in oracle_methods
+                and mean_v is not None
+                and abs(mean_v - best_val) < 1e-12
+            )
+            cells.append(_env_cell(env_data, csv_name, env, decimals, bold=is_best))
+
+        row_cells = " & ".join(cells)
+        a(rf"    {env} & {row_cells} \\")
+
+    a(r"    \bottomrule")
+    a(r"\end{tabular}")
+
+    return "\n".join(lines)
+
+
 def main(results_dir: str, output: str, decimals: int, n_obs: int) -> None:
     # Load data for all datasets
     data: dict[str, dict[str, np.ndarray]] = {}
     subset_data: dict[str, dict[str, tuple[float, float]]] = {}
+    env_data: dict[str, dict[str, dict[int, np.ndarray]]] = {}
     for ds in DATASETS:
         data[ds] = _load_min_acc(results_dir, ds, n_obs)
         subset_data[ds] = _load_subset_counts(results_dir, ds, n_obs)
+        env_data[ds] = _load_env_acc(results_dir, ds, n_obs)
 
     table1 = build_table1(data, decimals, n_obs)
     table2 = build_table2(data, subset_data, decimals, n_obs)
+
+    # Per-environment accuracy tables (one per dataset)
+    env_tables: list[str] = []
+    for ds in DATASETS:
+        t = build_env_acc_table(env_data[ds], ds, decimals)
+        env_tables.append(f"% --- Dataset {ds} ---\n{t}")
+    env_tables_str = "\n\n".join(env_tables)
 
     full = (
         "% =============================================================================\n"
@@ -446,6 +573,12 @@ def main(results_dir: str, output: str, decimals: int, n_obs: int) -> None:
         "% =============================================================================\n"
         "\n"
         f"{table2}\n"
+        "\n\n"
+        "% =============================================================================\n"
+        "% Tables 3a/3b/3c: Per-environment accuracy\n"
+        "% =============================================================================\n"
+        "\n"
+        f"{env_tables_str}\n"
     )
 
     with open(output, "w") as f:
