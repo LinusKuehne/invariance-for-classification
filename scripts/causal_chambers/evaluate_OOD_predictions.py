@@ -246,7 +246,7 @@ def _run_sc_config(
     rep: int,
     rep_seed: int,
     verbose: bool = False,
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict]]:
     """
     Fit one SC configuration and evaluate with both RF and LR base classifiers.
 
@@ -255,7 +255,9 @@ def _run_sc_config(
     result_rows : list[dict]
         Per-environment results for each (config, pred_clf) combination.
     subset_rows : list[dict]
-        Subset count info for this config, including the actual feature subsets.
+        Subset count info for this config.
+    pvalue_rows : list[dict]
+        p-values or invariance scores for all subsets evaluated.
     """
     kwargs: dict = {
         "alpha_inv": 0.05,
@@ -278,19 +280,6 @@ def _run_sc_config(
     n_inv = clf.n_invariant_subsets_
     n_pred = clf.n_predictive_subsets_  # dict[str, int] when list was passed
 
-    # extract actual subsets as JSON strings of feature names
-    # invariant subsets: same for all classifiers (shared invariance filter)
-    all_inv = clf._all_invariant_fitted_
-    all_inv_list: list[dict] = (
-        next(iter(all_inv.values())) if isinstance(all_inv, dict) else all_inv
-    )
-    subsets_invariant = _subsets_to_json(all_inv_list, feature_names)
-
-    active_rf: list[dict] = clf.active_subsets_["RF"]  # type: ignore[index]
-    active_lr: list[dict] = clf.active_subsets_["LR"]  # type: ignore[index]
-    subsets_predictive_rf = _subsets_to_json(active_rf, feature_names)
-    subsets_predictive_lr = _subsets_to_json(active_lr, feature_names)
-
     subset_rows = [
         {
             "rep": rep,
@@ -298,11 +287,24 @@ def _run_sc_config(
             "n_invariant": n_inv,
             "n_predictive_RF": n_pred["RF"] if isinstance(n_pred, dict) else n_pred,
             "n_predictive_LR": n_pred["LR"] if isinstance(n_pred, dict) else n_pred,
-            "subsets_invariant": subsets_invariant,
-            "subsets_predictive_RF": subsets_predictive_rf,
-            "subsets_predictive_LR": subsets_predictive_lr,
         }
     ]
+
+    pvalue_rows = []
+    if hasattr(clf, "all_results_"):
+        for r in clf.all_results_:
+            subset_names = [feature_names[i] for i in r["subset"]]
+            subset_json = json.dumps(subset_names)
+            # handle p_value or inv_score depending on the test
+            score = r.get("p_value", r.get("inv_score", float("nan")))
+            pvalue_rows.append(
+                {
+                    "rep": rep,
+                    "sc_config": config_name,
+                    "subset": subset_json,
+                    "p_value_or_score": score,
+                }
+            )
 
     result_rows: list[dict] = []
     for pred_clf in ["RF", "LR"]:
@@ -322,7 +324,7 @@ def _run_sc_config(
             per_env = _per_env_metrics(y_test, y_prob, y_pred, E_test)
             result_rows.extend(_rows_from_per_env(per_env, method_name, rep))
 
-    return result_rows, subset_rows
+    return result_rows, subset_rows, pvalue_rows
 
 
 # =============================================================================
@@ -623,10 +625,13 @@ def main(
     sc_subsets_path = os.path.join(
         save_dir, f"OOD_sc_subsets_{dataset}_n{n_obs_per_env}.csv"
     )
+    pvalues_path = os.path.join(
+        save_dir, f"OOD_sc_pvalues_{dataset}_n{n_obs_per_env}.csv"
+    )
     summary_path = os.path.join(save_dir, f"OOD_summary_{dataset}_n{n_obs_per_env}.csv")
 
     # Remove stale output files so every run starts fresh
-    for p in (raw_path, sc_subsets_path, summary_path):
+    for p in (raw_path, sc_subsets_path, pvalues_path, summary_path):
         if os.path.exists(p):
             os.remove(p)
 
@@ -686,7 +691,7 @@ def main(
         for cfg_name, inv_test, test_clf in SC_CONFIGS:
             t0 = time.time()
             print(f"  Running SC {cfg_name} ...", end=" ", flush=True)
-            result_rows, subset_rows = _run_sc_config(
+            result_rows, subset_rows, pvalue_rows = _run_sc_config(
                 config_name=cfg_name,
                 invariance_test=inv_test,
                 test_classifier_type=test_clf,
@@ -704,6 +709,7 @@ def main(
             )
             _append_to_csv(pd.DataFrame(result_rows), raw_path)
             _append_to_csv(pd.DataFrame(subset_rows), sc_subsets_path)
+            _append_to_csv(pd.DataFrame(pvalue_rows), pvalues_path)
             print(f"done ({time.time() - t0:.1f}s)")
 
         # ── ERM baselines ─────────────────────────────────────────────

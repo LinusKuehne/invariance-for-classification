@@ -554,6 +554,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
 
         self.n_subsets_total_ = 2**n_features
         self.n_invariant_subsets_ = len(invariant_results)
+        self.all_results_ = all_results
 
         # --- Step 2: predictive cutoff and ensemble filtering (per classifier) ---
         all_fitted_by_clf: dict[str, list[dict[str, Any]]] = {}
