@@ -113,8 +113,8 @@ SC_CONFIGS: list[tuple[str, str, str | None]] = [
     ("Residual(LR)", "inv_residual", "LR"),
     ("TramGCM(RF)", "tram_gcm", "RF"),
     ("TramGCM(LR)", "tram_gcm", "LR"),
-    ("WGCM_est", "wgcm_est", None),
-    ("WGCM_fix", "wgcm_fix", None),
+    # ("WGCM_est", "wgcm_est", None),
+    # ("WGCM_fix", "wgcm_fix", None),
     ("LOEO(RF)", "loeo_regret", "RF"),
     ("LOEO(LR)", "loeo_regret", "LR"),
 ]
