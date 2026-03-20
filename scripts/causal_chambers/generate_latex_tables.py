@@ -376,7 +376,7 @@ def build_table2(
     lines: list[str] = []
     a = lines.append
 
-    a(r"\begin{tabular}{@{}llccc@{}}")
+    a(r"\begin{tabular}{@{}lllll@{}}")
     a(r"    \toprule")
     a(r"    Method & Aggregation")
     a(r"      & {Dataset 1a}")
@@ -505,32 +505,10 @@ def build_env_acc_table(
     a(rf"    Test env & {header_cells} \\")
     a(r"    \midrule")
 
-    # For each environment, find the best non-oracle value to bold
-    oracle_methods = {"Oracle LR", "Oracle RF"}
-    non_oracle_csv = [csv for csv, _ in ENV_TABLE_METHODS if csv not in oracle_methods]
-
     for env in envs:
-        # find best among non-oracle methods for this env
-        best_val = -1.0
-        for csv_name in non_oracle_csv:
-            vals = env_data.get(csv_name, {}).get(env)
-            if vals is not None and len(vals) > 0:
-                v = float(np.mean(vals))
-                if v > best_val:
-                    best_val = v
-
         cells: list[str] = []
         for csv_name, _ in ENV_TABLE_METHODS:
-            vals = env_data.get(csv_name, {}).get(env)
-            mean_v = (
-                float(np.mean(vals)) if vals is not None and len(vals) > 0 else None
-            )
-            is_best = (
-                csv_name not in oracle_methods
-                and mean_v is not None
-                and abs(mean_v - best_val) < 1e-12
-            )
-            cells.append(_env_cell(env_data, csv_name, env, decimals, bold=is_best))
+            cells.append(_env_cell(env_data, csv_name, env, decimals, bold=False))
 
         row_cells = " & ".join(cells)
         a(rf"    {env} & {row_cells} \\")
