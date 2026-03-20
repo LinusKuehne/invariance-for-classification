@@ -24,6 +24,8 @@ from __future__ import annotations
 import argparse
 import os
 
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -424,6 +426,123 @@ def build_table2(
 
 
 # =============================================================================
+# spider / radar charts
+# =============================================================================
+
+# Consistent color mapping: SC-TramGCM=blue, IRM=orange, ERM=red, Oracle=yellow
+SPIDER_COLORS = ["#4472c4", "#e8943a", "#c75b5b", "#f0d890"]
+SPIDER_ALPHA = 0.20
+
+SPIDER_METHODS_LINEAR: list[tuple[str, str]] = [
+    ("SC TramGCM(LR), pred=LR", "SC-TramGCM(LR)"),
+    ("IRM-Linear", "IRM-Linear"),
+    ("ERM LR", "ERM-LR"),
+    ("Oracle LR", "Oracle-LR"),
+]
+
+SPIDER_METHODS_NONLINEAR: list[tuple[str, str]] = [
+    ("SC TramGCM(RF), pred=RF", "SC-TramGCM(RF)"),
+    ("IRM-NN", "IRM-NN"),
+    ("ERM RF", "ERM-RF"),
+    ("Oracle RF", "Oracle-RF"),
+]
+
+
+def build_spider_charts(
+    env_data: dict[str, dict[str, dict[int, np.ndarray]]],
+    methods: list[tuple[str, str]],
+    output_path: str,
+    grid_step: float = 0.1,
+    grid_step_overrides: dict[str, float] | None = None,
+) -> None:
+    """Save three side-by-side radar charts (one per dataset) to *output_path*.
+
+    *methods* is a list of (csv_name, display_label) pairs; colors are taken from
+    SPIDER_COLORS in order.
+    """
+    dataset_labels = {"1a": "Dataset 1a", "1b": "Dataset 1b", "2": "Dataset 2"}
+
+    fig, axes = plt.subplots(1, 3, subplot_kw=dict(polar=True), figsize=(13, 4.5))
+
+    for ax, ds in zip(axes, DATASETS, strict=False):
+        ds_data = env_data.get(ds, {})
+
+        all_envs: set[int] = set()
+        for csv_name, _ in methods:
+            if csv_name in ds_data:
+                all_envs.update(ds_data[csv_name].keys())
+        envs = sorted(all_envs)
+        N = len(envs)
+
+        if N == 0:
+            ax.set_visible(False)
+            continue
+
+        angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+        angles += angles[:1]  # close the polygon
+
+        # Y-axis: floor of min-mean to nearest step, ceiling at 1.0
+        step = (grid_step_overrides or {}).get(ds, grid_step)
+        all_means = [
+            float(np.mean(arr))
+            for csv_name, _ in methods
+            for env in envs
+            for arr in [ds_data.get(csv_name, {}).get(env)]
+            if arr is not None and len(arr) > 0
+        ]
+        raw_min = min(all_means, default=0.5)
+        raw_max = max(all_means, default=1.0)
+        y_min = max(0.0, np.floor(raw_min / step) * step)
+        y_max = min(1.0, np.ceil(raw_max / step) * step)
+        tick_vals = np.arange(y_min, y_max + step / 2, step)
+
+        for (csv_name, _), color in zip(methods, SPIDER_COLORS, strict=False):
+            values = [
+                float(np.mean(arr))
+                if (arr := ds_data.get(csv_name, {}).get(env)) is not None
+                and len(arr) > 0
+                else float("nan")
+                for env in envs
+            ]
+            values += values[:1]
+
+            if all(np.isnan(v) for v in values[:-1]):
+                continue
+
+            ax.plot(angles, values, color=color, linewidth=2)
+            ax.fill(angles, values, color=color, alpha=SPIDER_ALPHA)
+
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels([str(e) for e in envs], fontsize=15)
+        ax.set_ylim(y_min, y_max)
+        ax.set_yticks(tick_vals)
+        decimals = 2 if step < 0.1 else 1
+        ax.set_yticklabels(
+            [f"{v:.{decimals}f}" for v in tick_vals], fontsize=13, color="grey"
+        )
+        ax.set_title(dataset_labels.get(ds, f"Dataset {ds}"), pad=15, fontsize=17)
+        ax.grid(color="grey", linestyle="--", linewidth=0.5, alpha=0.5)
+
+    legend_handles = [
+        mpatches.Patch(color=color, label=label, alpha=0.8)
+        for (_, label), color in zip(methods, SPIDER_COLORS, strict=False)
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        ncol=len(methods),
+        fontsize=15,
+        frameon=True,
+        bbox_to_anchor=(0.5, -0.04),
+    )
+
+    plt.tight_layout(rect=(0, 0.08, 1, 1))
+    plt.savefig(output_path, bbox_inches="tight", dpi=150)
+    plt.close()
+    print(f"Spider charts written to {output_path}")
+
+
+# =============================================================================
 # per-environment accuracy table
 # =============================================================================
 
@@ -519,7 +638,13 @@ def build_env_acc_table(
     return "\n".join(lines)
 
 
-def main(results_dir: str, output: str, decimals: int, n_obs: int) -> None:
+def main(
+    results_dir: str,
+    output: str,
+    decimals: int,
+    n_obs: int,
+    spider_output: str | None = None,
+) -> None:
     # Load data for all datasets
     data: dict[str, dict[str, np.ndarray]] = {}
     subset_data: dict[str, dict[str, tuple[float, float]]] = {}
@@ -563,6 +688,27 @@ def main(results_dir: str, output: str, decimals: int, n_obs: int) -> None:
         f.write(full)
 
     print(f"Tables written to {output}")
+
+    out_dir = os.path.dirname(output)
+    if spider_output is None:
+        spider_linear = os.path.join(out_dir, "spider_charts_linear.pdf")
+        spider_nonlinear = os.path.join(out_dir, "spider_charts_nonlinear.pdf")
+    else:
+        base, ext = os.path.splitext(spider_output)
+        spider_linear = f"{base}_linear{ext}"
+        spider_nonlinear = f"{base}_nonlinear{ext}"
+    build_spider_charts(
+        env_data,
+        SPIDER_METHODS_LINEAR,
+        spider_linear,
+        grid_step_overrides={"1a": 0.05, "1b": 0.05, "2": 0.2},
+    )
+    build_spider_charts(
+        env_data,
+        SPIDER_METHODS_NONLINEAR,
+        spider_nonlinear,
+        grid_step_overrides={"1a": 0.05, "2": 0.2},
+    )
     print("\nPreview (first 40 lines):\n")
     for line in full.splitlines()[:40]:
         print(line)
@@ -601,10 +747,16 @@ if __name__ == "__main__":
         default=200,
         help="Number of observations per environment used in the evaluation run (default: 200).",
     )
+    parser.add_argument(
+        "--spider-output",
+        default=None,
+        help="Path for the spider chart PDF/PNG (default: <results-dir>/spider_charts.pdf).",
+    )
     args = parser.parse_args()
     main(
         results_dir=args.results_dir,
         output=args.output,
         decimals=args.decimals,
         n_obs=args.n_obs,
+        spider_output=args.spider_output,
     )
