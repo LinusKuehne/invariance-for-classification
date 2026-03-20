@@ -444,9 +444,10 @@ class IRMNNClassifier(ClassifierMixin, BaseEstimator):
     """
 
     _penalty_configs: list[dict] = [
-        {"irm_lambda": 1.0},
         {"irm_lambda": 10.0},
         {"irm_lambda": 100.0},
+        {"irm_lambda": 150.0},
+        {"irm_lambda": 200.0},
     ]
     _method_name = "IRM-NN"
 

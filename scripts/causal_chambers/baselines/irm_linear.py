@@ -233,7 +233,7 @@ def _build_grid() -> list[dict]:
     grid = {
         "lr": [1e-3, 5e-4, 1e-4],
         "weight_decay": [0.0, 1e-4],
-        "irm_lambda": [0.5, 0.9, 0.99],
+        "irm_lambda": [0.5, 0.7, 0.9, 0.95],
         "num_iterations": [5000, 10000],
         "seed": [0],
     }
