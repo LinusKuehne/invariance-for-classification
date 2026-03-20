@@ -1,34 +1,33 @@
 """
 IRM penalty analysis for dataset 2.
 
-We compute the IRMv1 penalty at the ERM (pooled logistic regression) optimum,
-following the original IRMv1 formulation:
+Compute the IRMv1 penalty at the ERM (pooled logistic regression) optimum,
+following the original IRMv1 formulation
 
-    Penalty(w, Phi) = sum_e || grad_{w|w=1} R_e(w * Phi(x)) ||^2
+Penalty(w, Phi) = sum_e || grad_{w|w=1} R_e(w * Phi(x)) ||^2,
 
 where R_e is the binary cross-entropy in environment e and Phi(x) is the
 representation (here: the ERM logistic model's linear combination of
-features). At w=1 this reduces to:
+features, before applying the sigmoid). At w=1 this reduces to:
 
-    Penalty_e = ( E_e[ (y - sigma(logit)) * logit ] )^2
+Penalty_e = ( E_e[ (y - sigmoid(logit)) * logit ] )^2,
 
-where logit = W^T x is the model's output and sigma is the sigmoid function.
+where logit = W^T x is the model's output.
 
 We evaluate the penalty at the ERM (pooled) optimum, not at
-an IRM-regularised solution to reveal the incentive structure that
-IRM faces.
+an IRM-regularised solution to reveal the incentive structure for IRM.
 
-Analysis 1 - Individual features
+Analysis 1: individual features
     For each feature in isolation, train ERM logistic regression using only
     that feature and compute the IRM penalty at the ERM optimum. Answers:
     "How invariant does each feature look to IRM when used alone?"
 
-Analysis 2 - Incremental addition to the stable blanket
+Analysis 2: incremental addition to the stable blanket
     Start from the stable blanket S = {red, green, blue} and consider the
     sets S, S + {ir_3}, S + {vis_3}.
     Answers: "What tradeoff does IRM face when deciding to include ir_3 (or
     vis_3)?" The penalty increase from adding a feature, relative to the
-    *training-loss decrease*, directly shows whether IRM's soft regularizer
+    training-loss decrease, directly shows whether IRM's soft regularizer
     can resist including the feature.
 """
 
@@ -167,15 +166,6 @@ def analysis_incremental(df_train: pd.DataFrame, df_test: pd.DataFrame) -> None:
     results = []
     for name, feats in feature_sets:
         res = irm_penalty_at_erm_optimum(feats, df_train)
-
-        # worst-case accuracy on adversarial test environments
-        scaler = StandardScaler()
-        X_tr_s = scaler.fit_transform(df_train[feats].values.astype(np.float64))
-        lr = LogisticRegression(
-            C=1e6, fit_intercept=True, max_iter=10_000, solver="lbfgs", random_state=0
-        )
-        lr.fit(X_tr_s, df_train["Y"].to_numpy())
-
         results.append(
             {
                 "name": name,
