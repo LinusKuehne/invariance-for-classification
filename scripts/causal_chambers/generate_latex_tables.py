@@ -691,12 +691,14 @@ def main(
 
     out_dir = os.path.dirname(output)
     if spider_output is None:
-        spider_linear = os.path.join(out_dir, "spider_charts_linear.pdf")
-        spider_nonlinear = os.path.join(out_dir, "spider_charts_nonlinear.pdf")
+        spider_linear = os.path.join(out_dir, f"spider_charts_linear_n{n_obs}.pdf")
+        spider_nonlinear = os.path.join(
+            out_dir, f"spider_charts_nonlinear_n{n_obs}.pdf"
+        )
     else:
         base, ext = os.path.splitext(spider_output)
-        spider_linear = f"{base}_linear{ext}"
-        spider_nonlinear = f"{base}_nonlinear{ext}"
+        spider_linear = f"{base}_linear_n{n_obs}{ext}"
+        spider_nonlinear = f"{base}_nonlinear_n{n_obs}{ext}"
     build_spider_charts(
         env_data,
         SPIDER_METHODS_LINEAR,
@@ -720,7 +722,7 @@ if __name__ == "__main__":
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     default_results = os.path.join(repo_root, "results")
-    default_output = os.path.join(repo_root, "results", "latex_tables.txt")
+    default_output = None
 
     parser = argparse.ArgumentParser(
         description="Generate LaTeX tables from OOD evaluation results."
@@ -733,7 +735,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         default=default_output,
-        help=f"Output file path (default: {default_output}).",
+        help="Output file path (default: <results-dir>/latex_tables_n<n_obs>.txt).",
     )
     parser.add_argument(
         "--decimals",
@@ -753,6 +755,8 @@ if __name__ == "__main__":
         help="Path for the spider chart PDF/PNG (default: <results-dir>/spider_charts.pdf).",
     )
     args = parser.parse_args()
+    if args.output is None:
+        args.output = os.path.join(args.results_dir, f"latex_tables_n{args.n_obs}.txt")
     main(
         results_dir=args.results_dir,
         output=args.output,
