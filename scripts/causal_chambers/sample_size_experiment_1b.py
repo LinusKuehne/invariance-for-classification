@@ -6,9 +6,13 @@ For each of N_REPS repetitions and each n_e in N_E_VALUES:
   2. Fit SC with TramGCM(RF) invariance test, RF predictor
   3. Evaluate on the full test set ("ensemble" and "best")
 
-Produces two plots:
-  - n_e vs accuracy, with 95% t-test CI bands (ensemble / best)
-  - n_e vs subset counts (n_invariant / n_predictive), with 95% CI bands
+Produces six plots:
+  - n_e vs accuracy (ensemble / best), 95% CI bands
+  - n_e vs subset counts (n_invariant / n_predictive), 95% CI bands
+  - Acceptance rate of the stable blanket {red, green, blue, vis_3} vs n_e
+  - Avg. size of accepted (invariant) subsets vs n_e
+  - TPR and FPR (at alpha=0.05) vs n_e, dual y-axes
+  - Pairwise AUC (invariant vs non-invariant p-values) vs n_e
 
 Usage:
     python sample_size_experiment_1b.py
@@ -18,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import sys
 import time
@@ -45,6 +50,9 @@ SEED = 42
 DATASET = "1b"
 N_E_VALUES_DEFAULT = [50, 100, 200, 300, 500, 750, 1000]
 NORMAL_COLS = ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"]
+
+# Stable blanket for dataset 1b (ground-truth oracle feature set)
+STABLE_BLANKET_1B = frozenset({"red", "green", "blue", "vis_3"})
 
 
 # =============================================================================
@@ -86,6 +94,33 @@ def _subsample_train(
     return pd.concat(dfs, ignore_index=True)
 
 
+def _gt_invariant_subsets_1b(features: list[str]) -> set[frozenset[str]]:
+    """Ground truth invariant subsets for dataset 1b (same logic as evaluate_all_tests.py)."""
+    base = [
+        frozenset(),
+        frozenset({"red"}),
+        frozenset({"green"}),
+        frozenset({"blue"}),
+        frozenset({"red", "green"}),
+        frozenset({"red", "blue"}),
+        frozenset({"green", "blue"}),
+        frozenset({"red", "green", "blue"}),
+        frozenset({"red", "green", "blue", "vis_3"}),
+    ]
+    optional = [
+        f for f in features if f not in {"red", "green", "blue", "vis_3", "ir_3"}
+    ]
+    opt_subsets = [frozenset()]
+    for r in range(1, len(optional) + 1):
+        for combo in itertools.combinations(optional, r):
+            opt_subsets.append(frozenset(combo))
+    result: set[frozenset[str]] = set()
+    for b in base:
+        for o in opt_subsets:
+            result.add(b | o)
+    return result
+
+
 # =============================================================================
 # statistics helper
 # =============================================================================
@@ -100,6 +135,16 @@ def _ci_half_width(values: np.ndarray, confidence: float = 0.95) -> float:
     return float(t_crit * se)
 
 
+def _pairwise_auc(inv_vals: np.ndarray, noninv_vals: np.ndarray) -> float:
+    """Fraction of (inv, noninv) pairs where inv p-value > noninv p-value."""
+    if len(inv_vals) == 0 or len(noninv_vals) == 0:
+        return float("nan")
+    count = sum(
+        1.0 if i > n else 0.5 if i == n else 0.0 for i in inv_vals for n in noninv_vals
+    )
+    return count / (len(inv_vals) * len(noninv_vals))
+
+
 # =============================================================================
 # experiment runner
 # =============================================================================
@@ -110,8 +155,8 @@ def run_experiment(
     n_e_values: list[int] | None = None,
     n_jobs: int = 10,
     verbose: bool = False,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run the experiment. Returns (df_accuracy, df_subsets)."""
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Run the experiment. Returns (df_accuracy, df_subsets, df_pvalues)."""
     if n_e_values is None:
         n_e_values = N_E_VALUES_DEFAULT
 
@@ -120,6 +165,10 @@ def run_experiment(
 
     X_test = df_test[features].to_numpy()
     y_test = df_test["Y"].to_numpy().astype(int)
+    E_test = df_test["E"].to_numpy()
+
+    gt_invariant_subsets = _gt_invariant_subsets_1b(features)
+    sb_key = ",".join(sorted(STABLE_BLANKET_1B))  # canonical string for CSV lookup
 
     print("=" * 60)
     print(f"Dataset         : {DATASET}")
@@ -129,10 +178,13 @@ def run_experiment(
     print(f"n_e values      : {n_e_values}")
     print(f"N_REPS          : {n_reps}")
     print(f"N_JOBS          : {n_jobs}")
+    print(f"GT invariant subsets: {len(gt_invariant_subsets)}")
+    print(f"Stable blanket  : {sb_key}")
     print("=" * 60)
 
     acc_records: list[dict] = []
     subset_records: list[dict] = []
+    pvalue_records: list[dict] = []
 
     for rep in range(n_reps):
         print(f"\nRepetition {rep + 1}/{n_reps}")
@@ -175,18 +227,44 @@ def run_experiment(
                 {"rep": rep, "n_e": n_e, "n_invariant": n_inv, "n_predictive": n_pred}
             )
 
+            # p-values for all evaluated subsets (for diagnostic plots)
+            if hasattr(clf, "all_results_"):
+                for r in clf.all_results_:
+                    subset_feats = frozenset(features[i] for i in r["subset"])
+                    subset_str = ",".join(sorted(subset_feats))
+                    pval = r.get("p_value", r.get("inv_score", float("nan")))
+                    pvalue_records.append(
+                        {
+                            "rep": rep,
+                            "n_e": n_e,
+                            "subset": subset_str,
+                            "p_value": pval,
+                            "is_gt_invariant": subset_feats in gt_invariant_subsets,
+                            "subset_size": len(subset_feats),
+                        }
+                    )
+
             for method_label in ["ensemble", "best"]:
                 y_pred = clf.predict(
                     X_test, pred_classifier_type="RF", method=method_label
                 )
-                acc = float(accuracy_score(y_test, y_pred))
+                acc = float(
+                    min(
+                        accuracy_score(y_test[E_test == e], y_pred[E_test == e])
+                        for e in np.unique(E_test)
+                    )
+                )
                 acc_records.append(
                     {"rep": rep, "n_e": n_e, "method": method_label, "accuracy": acc}
                 )
 
             print(f"done ({time.time() - t0:.1f}s)")
 
-    return pd.DataFrame(acc_records), pd.DataFrame(subset_records)
+    return (
+        pd.DataFrame(acc_records),
+        pd.DataFrame(subset_records),
+        pd.DataFrame(pvalue_records),
+    )
 
 
 # =============================================================================
@@ -209,6 +287,13 @@ def _add_legend(fig, series: dict[str, tuple[str, str]]) -> None:
     )
 
 
+def _mean_ci(vals: np.ndarray) -> tuple[float, float, float]:
+    """Return (mean, lower, upper) clipped to [0, inf)."""
+    m = float(np.mean(vals)) if len(vals) > 0 else float("nan")
+    ci = _ci_half_width(vals) if len(vals) >= 2 else float("nan")
+    return m, m - ci, m + ci
+
+
 # =============================================================================
 # plots
 # =============================================================================
@@ -229,18 +314,17 @@ def make_plot(df: pd.DataFrame, output_path: str) -> None:
         means, ci_lows, ci_highs = [], [], []
         for n_e in n_e_values:
             vals = mdf[mdf["n_e"] == n_e]["accuracy"].to_numpy()
-            m = float(np.mean(vals))
-            ci = _ci_half_width(vals)
+            m, lo, hi = _mean_ci(vals)
             means.append(m)
-            ci_lows.append(m - ci)
-            ci_highs.append(m + ci)
+            ci_lows.append(lo)
+            ci_highs.append(hi)
         ax.plot(positions, means, marker="o", color=color)
         ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
 
     ax.set_xticks(positions)
     ax.set_xticklabels([str(v) for v in n_e_values])
     ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Accuracy", fontsize=11)
+    ax.set_ylabel("Min. accuracy (worst env.)", fontsize=11)
 
     _add_legend(fig, series)
     plt.tight_layout(rect=(0, 0.08, 1, 1))
@@ -269,11 +353,10 @@ def make_subset_plot(df: pd.DataFrame, output_path: str) -> None:
         means, ci_lows, ci_highs = [], [], []
         for n_e in n_e_values:
             vals = df[df["n_e"] == n_e][col].to_numpy().astype(float)
-            m = float(np.mean(vals))
-            ci = _ci_half_width(vals)
+            m, lo, hi = _mean_ci(vals)
             means.append(m)
-            ci_lows.append(m - ci)
-            ci_highs.append(m + ci)
+            ci_lows.append(lo)
+            ci_highs.append(hi)
         ax.plot(positions, means, marker="o", color=color)
         ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
 
@@ -285,6 +368,183 @@ def make_subset_plot(df: pd.DataFrame, output_path: str) -> None:
 
     _add_legend(fig, series)
     plt.tight_layout(rect=(0, 0.08, 1, 1))
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
+def make_stable_blanket_plot(df_pv: pd.DataFrame, output_path: str) -> None:
+    """Acceptance rate of {red, green, blue, vis_3} (p-value > 0.05) vs n_e."""
+    sb_key = ",".join(sorted(STABLE_BLANKET_1B))
+    n_e_values = sorted(df_pv["n_e"].unique())
+    positions = list(range(len(n_e_values)))
+    color = "#2ca02c"
+
+    means, ci_lows, ci_highs = [], [], []
+    for n_e in n_e_values:
+        sub = df_pv[(df_pv["n_e"] == n_e) & (df_pv["subset"] == sb_key)]
+        vals = (
+            sub.groupby("rep")["p_value"]
+            .first()
+            .apply(lambda p: float(p > 0.05))
+            .to_numpy()
+        )
+        m, lo, hi = _mean_ci(vals)
+        means.append(m)
+        ci_lows.append(lo)
+        ci_highs.append(hi)
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    ax.plot(positions, means, marker="o", color=color)
+    ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
+    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+    ax.set_ylabel("Acceptance rate", fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
+def make_avg_accepted_size_plot(df_pv: pd.DataFrame, output_path: str) -> None:
+    """Mean size of accepted (p > 0.05) subsets vs n_e."""
+    n_e_values = sorted(df_pv["n_e"].unique())
+    positions = list(range(len(n_e_values)))
+    color = "#4472c4"
+
+    means, ci_lows, ci_highs = [], [], []
+    for n_e in n_e_values:
+        sub = df_pv[df_pv["n_e"] == n_e]
+        size_per_rep = []
+        for _, grp in sub.groupby("rep"):
+            accepted = grp[grp["p_value"] > 0.05]
+            size_per_rep.append(
+                float(accepted["subset_size"].mean()) if len(accepted) > 0 else 0.0
+            )
+        vals = np.array(size_per_rep)
+        m, lo, hi = _mean_ci(vals)
+        means.append(m)
+        ci_lows.append(lo)
+        ci_highs.append(hi)
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    ax.plot(positions, means, marker="o", color=color)
+    ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
+    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+    ax.set_ylabel("Avg. size of accepted subsets", fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
+def make_tpr_fpr_plot(df_pv: pd.DataFrame, output_path: str) -> None:
+    """TPR and FPR at alpha=0.05 vs n_e, with dual y-axes."""
+    n_e_values = sorted(df_pv["n_e"].unique())
+    positions = list(range(len(n_e_values)))
+    fpr_color = "#c75b5b"
+    tpr_color = "#4472c4"
+
+    fpr_means, fpr_lows, fpr_highs = [], [], []
+    tpr_means, tpr_lows, tpr_highs = [], [], []
+
+    for n_e in n_e_values:
+        sub = df_pv[df_pv["n_e"] == n_e]
+
+        fpr_per_rep = (
+            sub[~sub["is_gt_invariant"]]
+            .groupby("rep")
+            .apply(lambda g: float((g["p_value"] > 0.05).mean()))
+            .to_numpy()
+        )
+        tpr_per_rep = (
+            sub[sub["is_gt_invariant"]]
+            .groupby("rep")
+            .apply(lambda g: float((g["p_value"] > 0.05).mean()))
+            .to_numpy()
+        )
+
+        m, lo, hi = _mean_ci(fpr_per_rep)
+        fpr_means.append(m)
+        fpr_lows.append(lo)
+        fpr_highs.append(hi)
+        m, lo, hi = _mean_ci(tpr_per_rep)
+        tpr_means.append(m)
+        tpr_lows.append(lo)
+        tpr_highs.append(hi)
+
+    fig, ax1 = plt.subplots(figsize=(5, 3.5))
+    ax2 = ax1.twinx()
+
+    ax1.plot(positions, fpr_means, marker="o", color=fpr_color)
+    ax1.fill_between(positions, fpr_lows, fpr_highs, alpha=0.2, color=fpr_color)
+    ax1.axhline(0.05, color=fpr_color, linestyle="--", linewidth=0.8, alpha=0.5)
+    ax1.set_ylabel("FPR", fontsize=11, color=fpr_color)
+    ax1.tick_params(axis="y", labelcolor=fpr_color)
+    ax1.set_ylim(bottom=0)
+
+    ax2.plot(positions, tpr_means, marker="o", color=tpr_color)
+    ax2.fill_between(positions, tpr_lows, tpr_highs, alpha=0.2, color=tpr_color)
+    ax2.set_ylabel("TPR", fontsize=11, color=tpr_color)
+    ax2.tick_params(axis="y", labelcolor=tpr_color)
+
+    ax1.set_xticks(positions)
+    ax1.set_xticklabels([str(v) for v in n_e_values])
+    ax1.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+
+    handles = [
+        mpatches.Patch(color=fpr_color, label="FPR", alpha=0.8),
+        mpatches.Patch(color=tpr_color, label="TPR", alpha=0.8),
+    ]
+    fig.legend(
+        handles=handles,
+        loc="lower center",
+        ncol=2,
+        fontsize=12,
+        frameon=True,
+        bbox_to_anchor=(0.5, -0.04),
+    )
+    plt.tight_layout(rect=(0, 0.08, 1, 1))
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
+def make_pairwise_auc_plot(df_pv: pd.DataFrame, output_path: str) -> None:
+    """Pairwise AUC (invariant vs non-invariant p-values) vs n_e."""
+    n_e_values = sorted(df_pv["n_e"].unique())
+    positions = list(range(len(n_e_values)))
+    color = "#9467bd"
+
+    means, ci_lows, ci_highs = [], [], []
+    for n_e in n_e_values:
+        sub = df_pv[df_pv["n_e"] == n_e]
+        auc_per_rep = []
+        for _, grp in sub.groupby("rep"):
+            inv_pv = grp[grp["is_gt_invariant"]]["p_value"].dropna().to_numpy()
+            noninv_pv = grp[~grp["is_gt_invariant"]]["p_value"].dropna().to_numpy()
+            auc_per_rep.append(_pairwise_auc(inv_pv, noninv_pv))
+        vals = np.array([v for v in auc_per_rep if not np.isnan(v)])
+        m, lo, hi = _mean_ci(vals)
+        means.append(m)
+        ci_lows.append(lo)
+        ci_highs.append(hi)
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    ax.plot(positions, means, marker="o", color=color)
+    ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
+    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+    ax.set_ylabel("Pairwise AUC", fontsize=11)
+
+    plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
     plt.close()
@@ -314,6 +574,7 @@ def main() -> None:
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    nreps = args.n_reps
 
     repo_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -321,7 +582,7 @@ def main() -> None:
     save_dir = os.path.join(repo_root, "results", DATASET)
     os.makedirs(save_dir, exist_ok=True)
 
-    df_acc, df_subsets = run_experiment(
+    df_acc, df_subsets, df_pvalues = run_experiment(
         n_reps=args.n_reps,
         n_e_values=args.n_e_values,
         n_jobs=args.n_jobs,
@@ -330,15 +591,35 @@ def main() -> None:
 
     acc_path = os.path.join(save_dir, "sample_size_1b.csv")
     subsets_path = os.path.join(save_dir, "sample_size_1b_subsets.csv")
+    pvalues_path = os.path.join(save_dir, "sample_size_1b_pvalues.csv")
     df_acc.to_csv(acc_path, index=False)
     df_subsets.to_csv(subsets_path, index=False)
+    df_pvalues.to_csv(pvalues_path, index=False)
     print(f"\nResults saved to {acc_path}")
     print(f"Subset counts saved to {subsets_path}")
+    print(f"P-values saved to {pvalues_path}")
 
-    make_plot(df_acc, os.path.join(save_dir, f"sample_size_1b_{args.n_jobs}.pdf"))
+    make_plot(df_acc, os.path.join(save_dir, f"sample_size_1b_{nreps}.pdf"))
     make_subset_plot(
-        df_subsets, os.path.join(save_dir, f"sample_size_1b_subsets_{args.n_jobs}.pdf")
+        df_subsets, os.path.join(save_dir, f"sample_size_1b_subsets_{nreps}.pdf")
     )
+
+    if len(df_pvalues) > 0:
+        make_stable_blanket_plot(
+            df_pvalues,
+            os.path.join(save_dir, f"sample_size_1b_sb_acceptance_{nreps}.pdf"),
+        )
+        make_avg_accepted_size_plot(
+            df_pvalues, os.path.join(save_dir, f"sample_size_1b_avg_size_{nreps}.pdf")
+        )
+        make_tpr_fpr_plot(
+            df_pvalues, os.path.join(save_dir, f"sample_size_1b_tpr_fpr_{nreps}.pdf")
+        )
+        make_pairwise_auc_plot(
+            df_pvalues, os.path.join(save_dir, f"sample_size_1b_auc_{nreps}.pdf")
+        )
+    else:
+        print("WARNING: no p-value data collected (all_results_ not available).")
 
 
 if __name__ == "__main__":
