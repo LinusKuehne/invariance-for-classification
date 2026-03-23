@@ -6,7 +6,9 @@ For each of N_REPS repetitions and each n_e in N_E_VALUES:
   2. Fit SC with TramGCM(RF) invariance test, RF predictor
   3. Evaluate on the full test set ("ensemble" and "best")
 
-Produces a plot: n_e vs accuracy, with 95% t-test CI bands.
+Produces two plots:
+  - n_e vs accuracy, with 95% t-test CI bands (ensemble / best)
+  - n_e vs subset counts (n_invariant / n_predictive), with 95% CI bands
 
 Usage:
     python sample_size_experiment_1b.py
@@ -24,10 +26,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
-import matplotlib
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import matplotlib.ticker
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -43,7 +43,7 @@ from invariance_for_classification import StabilizedClassificationClassifier
 
 SEED = 42
 DATASET = "1b"
-N_E_VALUES_DEFAULT = [50, 100]  # , 200, 500, 1000]
+N_E_VALUES_DEFAULT = [50, 100, 200, 300, 500, 750, 1000]
 NORMAL_COLS = ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"]
 
 
@@ -110,7 +110,8 @@ def run_experiment(
     n_e_values: list[int] | None = None,
     n_jobs: int = 10,
     verbose: bool = False,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run the experiment. Returns (df_accuracy, df_subsets)."""
     if n_e_values is None:
         n_e_values = N_E_VALUES_DEFAULT
 
@@ -130,7 +131,8 @@ def run_experiment(
     print(f"N_JOBS          : {n_jobs}")
     print("=" * 60)
 
-    records: list[dict] = []
+    acc_records: list[dict] = []
+    subset_records: list[dict] = []
 
     for rep in range(n_reps):
         print(f"\nRepetition {rep + 1}/{n_reps}")
@@ -163,39 +165,66 @@ def run_experiment(
             )
             clf.fit(X_train, y_train, environment=E_train)
 
+            # subset counts
+            n_inv = int(clf.n_invariant_subsets_)
+            n_pred_raw = clf.n_predictive_subsets_
+            n_pred = (
+                n_pred_raw["RF"] if isinstance(n_pred_raw, dict) else int(n_pred_raw)
+            )
+            subset_records.append(
+                {"rep": rep, "n_e": n_e, "n_invariant": n_inv, "n_predictive": n_pred}
+            )
+
             for method_label in ["ensemble", "best"]:
                 y_pred = clf.predict(
                     X_test, pred_classifier_type="RF", method=method_label
                 )
                 acc = float(accuracy_score(y_test, y_pred))
-                records.append(
-                    {
-                        "rep": rep,
-                        "n_e": n_e,
-                        "method": method_label,
-                        "accuracy": acc,
-                    }
+                acc_records.append(
+                    {"rep": rep, "n_e": n_e, "method": method_label, "accuracy": acc}
                 )
 
             print(f"done ({time.time() - t0:.1f}s)")
 
-    return pd.DataFrame(records)
+    return pd.DataFrame(acc_records), pd.DataFrame(subset_records)
 
 
 # =============================================================================
-# plotting
+# plotting helpers
+# =============================================================================
+
+
+def _add_legend(fig, series: dict[str, tuple[str, str]]) -> None:
+    handles = [
+        mpatches.Patch(color=color, label=label, alpha=0.8)
+        for _, (color, label) in series.items()
+    ]
+    fig.legend(
+        handles=handles,
+        loc="lower center",
+        ncol=len(series),
+        fontsize=12,
+        frameon=True,
+        bbox_to_anchor=(0.5, -0.04),
+    )
+
+
+# =============================================================================
+# plots
 # =============================================================================
 
 
 def make_plot(df: pd.DataFrame, output_path: str) -> None:
     n_e_values = sorted(df["n_e"].unique())
-
-    method_display = {"ensemble": "Ensemble", "best": "Best subset"}
-    colors = {"ensemble": "#1f77b4", "best": "#ff7f0e"}
+    series = {
+        "ensemble": ("#1f77b4", "Ensemble"),
+        "best": ("#ff7f0e", "Best subset"),
+    }
 
     fig, ax = plt.subplots(figsize=(5, 3.5))
 
-    for method, _ in method_display.items():
+    positions = list(range(len(n_e_values)))
+    for method, (color, _) in series.items():
         mdf = df[df["method"] == method]
         means, ci_lows, ci_highs = [], [], []
         for n_e in n_e_values:
@@ -205,30 +234,56 @@ def make_plot(df: pd.DataFrame, output_path: str) -> None:
             means.append(m)
             ci_lows.append(m - ci)
             ci_highs.append(m + ci)
+        ax.plot(positions, means, marker="o", color=color)
+        ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
 
-        ax.plot(n_e_values, means, marker="o", color=colors[method])
-        ax.fill_between(n_e_values, ci_lows, ci_highs, alpha=0.2, color=colors[method])
-
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
     ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
     ax.set_ylabel("Accuracy", fontsize=11)
-    ax.set_xscale("log")
-    ax.set_xticks(n_e_values)
-    ax.set_xticks([], minor=True)
-    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
 
-    legend_handles = [
-        mpatches.Patch(color=colors[m], label=lbl, alpha=0.8)
-        for m, lbl in method_display.items()
-    ]
-    fig.legend(
-        handles=legend_handles,
-        loc="lower center",
-        ncol=len(method_display),
-        fontsize=12,
-        frameon=True,
-        bbox_to_anchor=(0.5, -0.04),
-    )
+    _add_legend(fig, series)
+    plt.tight_layout(rect=(0, 0.08, 1, 1))
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
 
+
+def make_subset_plot(df: pd.DataFrame, output_path: str) -> None:
+    n_e_values = sorted(df["n_e"].unique())
+    series = {
+        "n_invariant": (
+            "#2ca02c",
+            r"$|\hat{\mathcal{I}}_{\mathcal{E}_{\mathrm{tr}}}|$",
+        ),
+        "n_predictive": (
+            "#9467bd",
+            r"$|\hat{\mathcal{C}}_{\mathcal{E}_{\mathrm{tr}}}|$",
+        ),
+    }
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+
+    positions = list(range(len(n_e_values)))
+    for col, (color, _) in series.items():
+        means, ci_lows, ci_highs = [], [], []
+        for n_e in n_e_values:
+            vals = df[df["n_e"] == n_e][col].to_numpy().astype(float)
+            m = float(np.mean(vals))
+            ci = _ci_half_width(vals)
+            means.append(m)
+            ci_lows.append(m - ci)
+            ci_highs.append(m + ci)
+        ax.plot(positions, means, marker="o", color=color)
+        ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
+    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+    ax.set_ylabel("Number of subsets", fontsize=11)
+    ax.set_ylim(bottom=0)
+
+    _add_legend(fig, series)
     plt.tight_layout(rect=(0, 0.08, 1, 1))
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
@@ -252,7 +307,7 @@ def main() -> None:
         type=int,
         nargs="+",
         default=N_E_VALUES_DEFAULT,
-        help="List of n_e values to evaluate (default: 50 100 200 500 1000).",
+        help="List of n_e values to evaluate (default: 50 100 200 300 500 750 1000).",
     )
     parser.add_argument(
         "--n-jobs", type=int, default=10, help="Parallel workers (default: 10)."
@@ -266,19 +321,24 @@ def main() -> None:
     save_dir = os.path.join(repo_root, "results", DATASET)
     os.makedirs(save_dir, exist_ok=True)
 
-    results_path = os.path.join(save_dir, "sample_size_1b.csv")
-    plot_path = os.path.join(save_dir, "sample_size_1b.pdf")
-
-    df = run_experiment(
+    df_acc, df_subsets = run_experiment(
         n_reps=args.n_reps,
         n_e_values=args.n_e_values,
         n_jobs=args.n_jobs,
         verbose=args.verbose,
     )
-    df.to_csv(results_path, index=False)
-    print(f"\nResults saved to {results_path}")
 
-    make_plot(df, plot_path)
+    acc_path = os.path.join(save_dir, "sample_size_1b.csv")
+    subsets_path = os.path.join(save_dir, "sample_size_1b_subsets.csv")
+    df_acc.to_csv(acc_path, index=False)
+    df_subsets.to_csv(subsets_path, index=False)
+    print(f"\nResults saved to {acc_path}")
+    print(f"Subset counts saved to {subsets_path}")
+
+    make_plot(df_acc, os.path.join(save_dir, f"sample_size_1b_{args.n_jobs}.pdf"))
+    make_subset_plot(
+        df_subsets, os.path.join(save_dir, f"sample_size_1b_subsets_{args.n_jobs}.pdf")
+    )
 
 
 if __name__ == "__main__":
