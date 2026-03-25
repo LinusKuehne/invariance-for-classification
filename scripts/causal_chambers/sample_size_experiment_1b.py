@@ -155,7 +155,7 @@ def run_experiment(
     n_e_values: list[int] | None = None,
     n_jobs: int = 10,
     verbose: bool = False,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Run the experiment. Returns (df_accuracy, df_subsets, df_pvalues)."""
     if n_e_values is None:
         n_e_values = N_E_VALUES_DEFAULT
@@ -185,6 +185,8 @@ def run_experiment(
     acc_records: list[dict] = []
     subset_records: list[dict] = []
     pvalue_records: list[dict] = []
+    best_records: list[dict] = []
+    ensemble_records: list[dict] = []
 
     for rep in range(n_reps):
         print(f"\nRepetition {rep + 1}/{n_reps}")
@@ -244,6 +246,71 @@ def run_experiment(
                         }
                     )
 
+            # Track best subset and ensemble composition
+            _inv_fitted = getattr(clf, "_all_invariant_fitted_", None)
+            if _inv_fitted is not None:
+                if isinstance(_inv_fitted, dict):
+                    _inv_fitted = _inv_fitted.get(
+                        "RF", next(iter(_inv_fitted.values()), [])
+                    )
+                if _inv_fitted:
+                    best_r = max(_inv_fitted, key=lambda x: x["score"])
+                    best_feats = frozenset(features[i] for i in best_r["subset"])
+                    best_records.append(
+                        {
+                            "rep": rep,
+                            "n_e": n_e,
+                            "subset": ",".join(sorted(best_feats)),
+                            "is_gt_invariant": best_feats in gt_invariant_subsets,
+                        }
+                    )
+
+            _active = getattr(clf, "active_subsets_", None)
+            if _active is not None:
+                if isinstance(_active, dict):
+                    _active = _active.get("RF", next(iter(_active.values()), []))
+                n_active = len(_active)
+                ir3_count = sum(
+                    1 for r in _active if "ir_3" in {features[i] for i in r["subset"]}
+                )
+                noninv_count = sum(
+                    1
+                    for r in _active
+                    if frozenset(features[i] for i in r["subset"])
+                    not in gt_invariant_subsets
+                )
+                scores_inv = [
+                    r["score"]
+                    for r in _active
+                    if frozenset(features[i] for i in r["subset"])
+                    in gt_invariant_subsets
+                ]
+                scores_noninv = [
+                    r["score"]
+                    for r in _active
+                    if frozenset(features[i] for i in r["subset"])
+                    not in gt_invariant_subsets
+                ]
+                ensemble_records.append(
+                    {
+                        "rep": rep,
+                        "n_e": n_e,
+                        "n_active": n_active,
+                        "ir3_frac": ir3_count / n_active
+                        if n_active > 0
+                        else float("nan"),
+                        "noninv_frac": noninv_count / n_active
+                        if n_active > 0
+                        else float("nan"),
+                        "mean_score_inv": float(np.mean(scores_inv))
+                        if scores_inv
+                        else float("nan"),
+                        "mean_score_noninv": float(np.mean(scores_noninv))
+                        if scores_noninv
+                        else float("nan"),
+                    }
+                )
+
             for method_label in ["ensemble", "best"]:
                 y_pred = clf.predict(
                     X_test, pred_classifier_type="RF", method=method_label
@@ -264,6 +331,8 @@ def run_experiment(
         pd.DataFrame(acc_records),
         pd.DataFrame(subset_records),
         pd.DataFrame(pvalue_records),
+        pd.DataFrame(best_records),
+        pd.DataFrame(ensemble_records),
     )
 
 
@@ -550,6 +619,104 @@ def make_pairwise_auc_plot(df_pv: pd.DataFrame, output_path: str) -> None:
     plt.close()
 
 
+def make_best_noninv_plot(df_best: pd.DataFrame, output_path: str) -> None:
+    """Fraction of reps where 'best' subset is GT-non-invariant vs n_e."""
+    n_e_values = sorted(df_best["n_e"].unique())
+    positions = list(range(len(n_e_values)))
+    color = "#c75b5b"
+
+    means, ci_lows, ci_highs = [], [], []
+    for n_e in n_e_values:
+        vals = (
+            (~df_best[df_best["n_e"] == n_e]["is_gt_invariant"])
+            .to_numpy()
+            .astype(float)
+        )
+        m, lo, hi = _mean_ci(vals)
+        means.append(m)
+        ci_lows.append(lo)
+        ci_highs.append(hi)
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    ax.plot(positions, means, marker="o", color=color)
+    ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
+    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+    ax.set_ylabel("Fraction non-GT-invariant", fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
+def make_ensemble_contamination_plot(df_ens: pd.DataFrame, output_path: str) -> None:
+    """Fraction of ensemble members with ir_3 and fraction GT-non-invariant vs n_e."""
+    n_e_values = sorted(df_ens["n_e"].unique())
+    positions = list(range(len(n_e_values)))
+    series = {
+        "noninv_frac": ("#c75b5b", "GT-non-invariant fraction"),
+        "ir3_frac": ("#ff7f0e", "Contains ir_3"),
+    }
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    for col, (color, _) in series.items():
+        means, ci_lows, ci_highs = [], [], []
+        for n_e in n_e_values:
+            vals = df_ens[df_ens["n_e"] == n_e][col].dropna().to_numpy()
+            m, lo, hi = _mean_ci(vals)
+            means.append(m)
+            ci_lows.append(lo)
+            ci_highs.append(hi)
+        ax.plot(positions, means, marker="o", color=color)
+        ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
+    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+    ax.set_ylabel("Fraction of ensemble members", fontsize=11)
+
+    _add_legend(fig, series)
+    plt.tight_layout(rect=(0, 0.08, 1, 1))
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
+def make_score_comparison_plot(df_ens: pd.DataFrame, output_path: str) -> None:
+    """Mean predictive score of GT-invariant vs GT-non-invariant ensemble members vs n_e."""
+    n_e_values = sorted(df_ens["n_e"].unique())
+    positions = list(range(len(n_e_values)))
+    series = {
+        "mean_score_inv": ("#1f77b4", "GT-invariant"),
+        "mean_score_noninv": ("#c75b5b", "GT-non-invariant"),
+    }
+
+    fig, ax = plt.subplots(figsize=(5, 3.5))
+    for col, (color, _) in series.items():
+        means, ci_lows, ci_highs = [], [], []
+        for n_e in n_e_values:
+            vals = df_ens[df_ens["n_e"] == n_e][col].dropna().to_numpy()
+            m, lo, hi = _mean_ci(vals)
+            means.append(m)
+            ci_lows.append(lo)
+            ci_highs.append(hi)
+        ax.plot(positions, means, marker="o", color=color)
+        ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels([str(v) for v in n_e_values])
+    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
+    ax.set_ylabel("Mean predictive score", fontsize=11)
+
+    _add_legend(fig, series)
+    plt.tight_layout(rect=(0, 0.08, 1, 1))
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
+
+
 # =============================================================================
 # main
 # =============================================================================
@@ -582,7 +749,7 @@ def main() -> None:
     save_dir = os.path.join(repo_root, "results", DATASET)
     os.makedirs(save_dir, exist_ok=True)
 
-    df_acc, df_subsets, df_pvalues = run_experiment(
+    df_acc, df_subsets, df_pvalues, df_best, df_ensemble = run_experiment(
         n_reps=args.n_reps,
         n_e_values=args.n_e_values,
         n_jobs=args.n_jobs,
@@ -592,12 +759,18 @@ def main() -> None:
     acc_path = os.path.join(save_dir, "sample_size_1b.csv")
     subsets_path = os.path.join(save_dir, "sample_size_1b_subsets.csv")
     pvalues_path = os.path.join(save_dir, "sample_size_1b_pvalues.csv")
+    best_path = os.path.join(save_dir, "sample_size_1b_best.csv")
+    ensemble_path = os.path.join(save_dir, "sample_size_1b_ensemble.csv")
     df_acc.to_csv(acc_path, index=False)
     df_subsets.to_csv(subsets_path, index=False)
     df_pvalues.to_csv(pvalues_path, index=False)
+    df_best.to_csv(best_path, index=False)
+    df_ensemble.to_csv(ensemble_path, index=False)
     print(f"\nResults saved to {acc_path}")
     print(f"Subset counts saved to {subsets_path}")
     print(f"P-values saved to {pvalues_path}")
+    print(f"Best subsets saved to {best_path}")
+    print(f"Ensemble composition saved to {ensemble_path}")
 
     make_plot(df_acc, os.path.join(save_dir, f"sample_size_1b_{nreps}.pdf"))
     make_subset_plot(
@@ -620,6 +793,20 @@ def main() -> None:
         )
     else:
         print("WARNING: no p-value data collected (all_results_ not available).")
+
+    if len(df_best) > 0:
+        make_best_noninv_plot(
+            df_best, os.path.join(save_dir, f"sample_size_1b_best_noninv_{nreps}.pdf")
+        )
+    if len(df_ensemble) > 0:
+        make_ensemble_contamination_plot(
+            df_ensemble,
+            os.path.join(save_dir, f"sample_size_1b_ens_contamination_{nreps}.pdf"),
+        )
+        make_score_comparison_plot(
+            df_ensemble,
+            os.path.join(save_dir, f"sample_size_1b_score_comparison_{nreps}.pdf"),
+        )
 
 
 if __name__ == "__main__":
