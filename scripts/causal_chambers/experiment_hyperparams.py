@@ -37,11 +37,14 @@ from evaluate_OOD_predictions import (
 )
 from joblib import Parallel, delayed
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import log_loss
 from sklearn.utils import resample
 from tqdm import tqdm
 
 from invariance_for_classification import StabilizedClassificationClassifier
+from invariance_for_classification.estimators._stabilized import (
+    _aggregate_score,
+    _fit_model_helper,
+)
 
 N_BOOTSTRAP = 250
 
@@ -65,18 +68,23 @@ def _bootstrap_cutoff_scores(X, y, S_max, seed, n_bootstrap, n_jobs):
         oob = np.setdiff1d(np.arange(n), indices)
         if len(oob) == 0:
             return None
-        if len(S_max) > 0:
-            X_tr = X[np.ix_(indices, list(S_max))]
-            X_oo = X[np.ix_(oob, list(S_max))]
-        else:
-            X_tr = np.zeros((len(indices), 0))
-            X_oo = np.zeros((len(oob), 0))
+
+        # Handle empty features by using _fit_model_helper exactly as SC does
+        X_tr = (
+            X[np.ix_(indices, list(S_max))]
+            if len(S_max) > 0
+            else np.zeros((len(indices), 0))
+        )
+        X_oo = (
+            X[np.ix_(oob, list(S_max))] if len(S_max) > 0 else np.zeros((len(oob), 0))
+        )
+
         rf = RandomForestClassifier(
             n_estimators=100, oob_score=False, random_state=s, n_jobs=1
         )
-        rf.fit(X_tr, y[indices])
-        proba = rf.predict_proba(X_oo)
-        return float(-log_loss(y[oob], proba, labels=[0, 1]))
+        model = _fit_model_helper(X_tr, y[indices], rf)
+        proba = model.predict_proba(X_oo)
+        return _aggregate_score(y[oob], proba, None, "mean")
 
     rng_main = np.random.RandomState(seed)
     seeds = rng_main.randint(0, np.iinfo(np.int32).max, size=n_bootstrap)
