@@ -6,13 +6,10 @@ For each of N_REPS repetitions and each n_e in N_E_VALUES:
   2. Fit SC with TramGCM(RF) invariance test, RF predictor
   3. Evaluate on the full test set ("ensemble" and "best")
 
-Produces six plots:
-  - n_e vs accuracy (ensemble / best), 95% CI bands
-  - n_e vs subset counts (n_invariant / n_predictive), 95% CI bands
-  - Acceptance rate of the stable blanket {red, green, blue, vis_3} vs n_e
-  - Avg. size of accepted (invariant) subsets vs n_e
+Produces three plots:
+  - n_e vs min. accuracy (ensemble / best), 95% CI bands
   - TPR and FPR (at alpha=0.05) vs n_e, dual y-axes
-  - Pairwise AUC (invariant vs non-invariant p-values) vs n_e
+  - Fraction of ensemble members containing ir_3 vs n_e
 
 Usage:
     python sample_size_experiment_1b.py
@@ -50,9 +47,6 @@ SEED = 42
 DATASET = "1b"
 N_E_VALUES_DEFAULT = [50, 100, 200, 300, 500, 750, 1000]
 NORMAL_COLS = ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"]
-
-# Stable blanket for dataset 1b (ground-truth oracle feature set)
-STABLE_BLANKET_1B = frozenset({"red", "green", "blue", "vis_3"})
 
 
 # =============================================================================
@@ -135,16 +129,6 @@ def _ci_half_width(values: np.ndarray, confidence: float = 0.95) -> float:
     return float(t_crit * se)
 
 
-def _pairwise_auc(inv_vals: np.ndarray, noninv_vals: np.ndarray) -> float:
-    """Fraction of (inv, noninv) pairs where inv p-value > noninv p-value."""
-    if len(inv_vals) == 0 or len(noninv_vals) == 0:
-        return float("nan")
-    count = sum(
-        1.0 if i > n else 0.5 if i == n else 0.0 for i in inv_vals for n in noninv_vals
-    )
-    return count / (len(inv_vals) * len(noninv_vals))
-
-
 # =============================================================================
 # experiment runner
 # =============================================================================
@@ -155,8 +139,8 @@ def run_experiment(
     n_e_values: list[int] | None = None,
     n_jobs: int = 10,
     verbose: bool = False,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Run the experiment. Returns (df_accuracy, df_subsets, df_pvalues)."""
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Run the experiment. Returns (df_accuracy, df_pvalues, df_ensemble)."""
     if n_e_values is None:
         n_e_values = N_E_VALUES_DEFAULT
 
@@ -168,7 +152,6 @@ def run_experiment(
     E_test = df_test["E"].to_numpy()
 
     gt_invariant_subsets = _gt_invariant_subsets_1b(features)
-    sb_key = ",".join(sorted(STABLE_BLANKET_1B))  # canonical string for CSV lookup
 
     print("=" * 60)
     print(f"Dataset         : {DATASET}")
@@ -179,13 +162,10 @@ def run_experiment(
     print(f"N_REPS          : {n_reps}")
     print(f"N_JOBS          : {n_jobs}")
     print(f"GT invariant subsets: {len(gt_invariant_subsets)}")
-    print(f"Stable blanket  : {sb_key}")
     print("=" * 60)
 
     acc_records: list[dict] = []
-    subset_records: list[dict] = []
     pvalue_records: list[dict] = []
-    best_records: list[dict] = []
     ensemble_records: list[dict] = []
 
     for rep in range(n_reps):
@@ -219,52 +199,21 @@ def run_experiment(
             )
             clf.fit(X_train, y_train, environment=E_train)
 
-            # subset counts
-            n_inv = int(clf.n_invariant_subsets_)
-            n_pred_raw = clf.n_predictive_subsets_
-            n_pred = (
-                n_pred_raw["RF"] if isinstance(n_pred_raw, dict) else int(n_pred_raw)
-            )
-            subset_records.append(
-                {"rep": rep, "n_e": n_e, "n_invariant": n_inv, "n_predictive": n_pred}
-            )
-
-            # p-values for all evaluated subsets (for diagnostic plots)
+            # p-values for all evaluated subsets (for TPR/FPR plot)
             if hasattr(clf, "all_results_"):
                 for r in clf.all_results_:
                     subset_feats = frozenset(features[i] for i in r["subset"])
-                    subset_str = ",".join(sorted(subset_feats))
                     pval = r.get("p_value", r.get("inv_score", float("nan")))
                     pvalue_records.append(
                         {
                             "rep": rep,
                             "n_e": n_e,
-                            "subset": subset_str,
                             "p_value": pval,
                             "is_gt_invariant": subset_feats in gt_invariant_subsets,
-                            "subset_size": len(subset_feats),
                         }
                     )
 
-            # Track best subset and ensemble composition
-            _inv_fitted = getattr(clf, "_all_invariant_fitted_", None)
-            if _inv_fitted is not None:
-                if isinstance(_inv_fitted, dict):
-                    _inv_fitted = _inv_fitted.get(
-                        "RF", next(iter(_inv_fitted.values()), [])
-                    )
-                if _inv_fitted:
-                    best_r = max(_inv_fitted, key=lambda x: x["score"])
-                    best_feats = frozenset(features[i] for i in best_r["subset"])
-                    best_records.append(
-                        {
-                            "rep": rep,
-                            "n_e": n_e,
-                            "subset": ",".join(sorted(best_feats)),
-                            "is_gt_invariant": best_feats in gt_invariant_subsets,
-                        }
-                    )
-
+            # Track fraction of ensemble members containing ir_3
             _active = getattr(clf, "active_subsets_", None)
             if _active is not None:
                 if isinstance(_active, dict):
@@ -273,40 +222,12 @@ def run_experiment(
                 ir3_count = sum(
                     1 for r in _active if "ir_3" in {features[i] for i in r["subset"]}
                 )
-                noninv_count = sum(
-                    1
-                    for r in _active
-                    if frozenset(features[i] for i in r["subset"])
-                    not in gt_invariant_subsets
-                )
-                scores_inv = [
-                    r["score"]
-                    for r in _active
-                    if frozenset(features[i] for i in r["subset"])
-                    in gt_invariant_subsets
-                ]
-                scores_noninv = [
-                    r["score"]
-                    for r in _active
-                    if frozenset(features[i] for i in r["subset"])
-                    not in gt_invariant_subsets
-                ]
                 ensemble_records.append(
                     {
                         "rep": rep,
                         "n_e": n_e,
-                        "n_active": n_active,
                         "ir3_frac": ir3_count / n_active
                         if n_active > 0
-                        else float("nan"),
-                        "noninv_frac": noninv_count / n_active
-                        if n_active > 0
-                        else float("nan"),
-                        "mean_score_inv": float(np.mean(scores_inv))
-                        if scores_inv
-                        else float("nan"),
-                        "mean_score_noninv": float(np.mean(scores_noninv))
-                        if scores_noninv
                         else float("nan"),
                     }
                 )
@@ -329,9 +250,7 @@ def run_experiment(
 
     return (
         pd.DataFrame(acc_records),
-        pd.DataFrame(subset_records),
         pd.DataFrame(pvalue_records),
-        pd.DataFrame(best_records),
         pd.DataFrame(ensemble_records),
     )
 
@@ -357,7 +276,7 @@ def _add_legend(fig, series: dict[str, tuple[str, str]]) -> None:
 
 
 def _mean_ci(vals: np.ndarray) -> tuple[float, float, float]:
-    """Return (mean, lower, upper) clipped to [0, inf)."""
+    """Return (mean, lower, upper)."""
     m = float(np.mean(vals)) if len(vals) > 0 else float("nan")
     ci = _ci_half_width(vals) if len(vals) >= 2 else float("nan")
     return m, m - ci, m + ci
@@ -393,120 +312,10 @@ def make_plot(df: pd.DataFrame, output_path: str) -> None:
     ax.set_xticks(positions)
     ax.set_xticklabels([str(v) for v in n_e_values])
     ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Min. accuracy (worst env.)", fontsize=11)
+    ax.set_ylabel("Worst-case accuracy", fontsize=11)
 
     _add_legend(fig, series)
     plt.tight_layout(rect=(0, 0.08, 1, 1))
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {output_path}")
-    plt.close()
-
-
-def make_subset_plot(df: pd.DataFrame, output_path: str) -> None:
-    n_e_values = sorted(df["n_e"].unique())
-    series = {
-        "n_invariant": (
-            "#2ca02c",
-            r"$|\hat{\mathcal{I}}_{\mathcal{E}_{\mathrm{tr}}}|$",
-        ),
-        "n_predictive": (
-            "#9467bd",
-            r"$|\hat{\mathcal{C}}_{\mathcal{E}_{\mathrm{tr}}}|$",
-        ),
-    }
-
-    fig, ax = plt.subplots(figsize=(5, 3.5))
-
-    positions = list(range(len(n_e_values)))
-    for col, (color, _) in series.items():
-        means, ci_lows, ci_highs = [], [], []
-        for n_e in n_e_values:
-            vals = df[df["n_e"] == n_e][col].to_numpy().astype(float)
-            m, lo, hi = _mean_ci(vals)
-            means.append(m)
-            ci_lows.append(lo)
-            ci_highs.append(hi)
-        ax.plot(positions, means, marker="o", color=color)
-        ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
-
-    ax.set_xticks(positions)
-    ax.set_xticklabels([str(v) for v in n_e_values])
-    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Number of subsets", fontsize=11)
-    ax.set_ylim(bottom=0)
-
-    _add_legend(fig, series)
-    plt.tight_layout(rect=(0, 0.08, 1, 1))
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {output_path}")
-    plt.close()
-
-
-def make_stable_blanket_plot(df_pv: pd.DataFrame, output_path: str) -> None:
-    """Acceptance rate of {red, green, blue, vis_3} (p-value > 0.05) vs n_e."""
-    sb_key = ",".join(sorted(STABLE_BLANKET_1B))
-    n_e_values = sorted(df_pv["n_e"].unique())
-    positions = list(range(len(n_e_values)))
-    color = "#2ca02c"
-
-    means, ci_lows, ci_highs = [], [], []
-    for n_e in n_e_values:
-        sub = df_pv[(df_pv["n_e"] == n_e) & (df_pv["subset"] == sb_key)]
-        vals = (
-            sub.groupby("rep")["p_value"]
-            .first()
-            .apply(lambda p: float(p > 0.05))
-            .to_numpy()
-        )
-        m, lo, hi = _mean_ci(vals)
-        means.append(m)
-        ci_lows.append(lo)
-        ci_highs.append(hi)
-
-    fig, ax = plt.subplots(figsize=(5, 3.5))
-    ax.plot(positions, means, marker="o", color=color)
-    ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
-    ax.set_xticks(positions)
-    ax.set_xticklabels([str(v) for v in n_e_values])
-    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Acceptance rate", fontsize=11)
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {output_path}")
-    plt.close()
-
-
-def make_avg_accepted_size_plot(df_pv: pd.DataFrame, output_path: str) -> None:
-    """Mean size of accepted (p > 0.05) subsets vs n_e."""
-    n_e_values = sorted(df_pv["n_e"].unique())
-    positions = list(range(len(n_e_values)))
-    color = "#4472c4"
-
-    means, ci_lows, ci_highs = [], [], []
-    for n_e in n_e_values:
-        sub = df_pv[df_pv["n_e"] == n_e]
-        size_per_rep = []
-        for _, grp in sub.groupby("rep"):
-            accepted = grp[grp["p_value"] > 0.05]
-            size_per_rep.append(
-                float(accepted["subset_size"].mean()) if len(accepted) > 0 else 0.0
-            )
-        vals = np.array(size_per_rep)
-        m, lo, hi = _mean_ci(vals)
-        means.append(m)
-        ci_lows.append(lo)
-        ci_highs.append(hi)
-
-    fig, ax = plt.subplots(figsize=(5, 3.5))
-    ax.plot(positions, means, marker="o", color=color)
-    ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
-    ax.set_xticks(positions)
-    ax.set_xticklabels([str(v) for v in n_e_values])
-    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Avg. size of accepted subsets", fontsize=11)
-
-    plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
     plt.close()
@@ -517,7 +326,7 @@ def make_tpr_fpr_plot(df_pv: pd.DataFrame, output_path: str) -> None:
     n_e_values = sorted(df_pv["n_e"].unique())
     positions = list(range(len(n_e_values)))
     fpr_color = "#c75b5b"
-    tpr_color = "#4472c4"
+    tpr_color = "#2ca02c"
 
     fpr_means, fpr_lows, fpr_highs = [], [], []
     tpr_means, tpr_lows, tpr_highs = [], [], []
@@ -584,54 +393,15 @@ def make_tpr_fpr_plot(df_pv: pd.DataFrame, output_path: str) -> None:
     plt.close()
 
 
-def make_pairwise_auc_plot(df_pv: pd.DataFrame, output_path: str) -> None:
-    """Pairwise AUC (invariant vs non-invariant p-values) vs n_e."""
-    n_e_values = sorted(df_pv["n_e"].unique())
+def make_ensemble_ir3_plot(df_ens: pd.DataFrame, output_path: str) -> None:
+    """Fraction of ensemble members containing ir_3 vs n_e."""
+    n_e_values = sorted(df_ens["n_e"].unique())
     positions = list(range(len(n_e_values)))
     color = "#9467bd"
 
     means, ci_lows, ci_highs = [], [], []
     for n_e in n_e_values:
-        sub = df_pv[df_pv["n_e"] == n_e]
-        auc_per_rep = []
-        for _, grp in sub.groupby("rep"):
-            inv_pv = grp[grp["is_gt_invariant"]]["p_value"].dropna().to_numpy()
-            noninv_pv = grp[~grp["is_gt_invariant"]]["p_value"].dropna().to_numpy()
-            auc_per_rep.append(_pairwise_auc(inv_pv, noninv_pv))
-        vals = np.array([v for v in auc_per_rep if not np.isnan(v)])
-        m, lo, hi = _mean_ci(vals)
-        means.append(m)
-        ci_lows.append(lo)
-        ci_highs.append(hi)
-
-    fig, ax = plt.subplots(figsize=(5, 3.5))
-    ax.plot(positions, means, marker="o", color=color)
-    ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
-    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
-    ax.set_xticks(positions)
-    ax.set_xticklabels([str(v) for v in n_e_values])
-    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Pairwise AUC", fontsize=11)
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {output_path}")
-    plt.close()
-
-
-def make_best_noninv_plot(df_best: pd.DataFrame, output_path: str) -> None:
-    """Fraction of reps where 'best' subset is GT-non-invariant vs n_e."""
-    n_e_values = sorted(df_best["n_e"].unique())
-    positions = list(range(len(n_e_values)))
-    color = "#c75b5b"
-
-    means, ci_lows, ci_highs = [], [], []
-    for n_e in n_e_values:
-        vals = (
-            (~df_best[df_best["n_e"] == n_e]["is_gt_invariant"])
-            .to_numpy()
-            .astype(float)
-        )
+        vals = df_ens[df_ens["n_e"] == n_e]["ir3_frac"].dropna().to_numpy()
         m, lo, hi = _mean_ci(vals)
         means.append(m)
         ci_lows.append(lo)
@@ -643,75 +413,15 @@ def make_best_noninv_plot(df_best: pd.DataFrame, output_path: str) -> None:
     ax.set_xticks(positions)
     ax.set_xticklabels([str(v) for v in n_e_values])
     ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Fraction non-GT-invariant", fontsize=11)
+    ax.set_ylabel(
+        "Fraction of subsets in "
+        + r"$\hat{\mathcal{C}}_{\mathcal{E}_{\mathrm{tr}}}$"
+        + "\ncontaining ir$_3$",
+        fontsize=11,
+    )
+    ax.set_ylim(bottom=0)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {output_path}")
-    plt.close()
-
-
-def make_ensemble_contamination_plot(df_ens: pd.DataFrame, output_path: str) -> None:
-    """Fraction of ensemble members with ir_3 and fraction GT-non-invariant vs n_e."""
-    n_e_values = sorted(df_ens["n_e"].unique())
-    positions = list(range(len(n_e_values)))
-    series = {
-        "noninv_frac": ("#c75b5b", "GT-non-invariant fraction"),
-        "ir3_frac": ("#ff7f0e", "Contains ir_3"),
-    }
-
-    fig, ax = plt.subplots(figsize=(5, 3.5))
-    for col, (color, _) in series.items():
-        means, ci_lows, ci_highs = [], [], []
-        for n_e in n_e_values:
-            vals = df_ens[df_ens["n_e"] == n_e][col].dropna().to_numpy()
-            m, lo, hi = _mean_ci(vals)
-            means.append(m)
-            ci_lows.append(lo)
-            ci_highs.append(hi)
-        ax.plot(positions, means, marker="o", color=color)
-        ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
-
-    ax.set_xticks(positions)
-    ax.set_xticklabels([str(v) for v in n_e_values])
-    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Fraction of ensemble members", fontsize=11)
-
-    _add_legend(fig, series)
-    plt.tight_layout(rect=(0, 0.08, 1, 1))
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {output_path}")
-    plt.close()
-
-
-def make_score_comparison_plot(df_ens: pd.DataFrame, output_path: str) -> None:
-    """Mean predictive score of GT-invariant vs GT-non-invariant ensemble members vs n_e."""
-    n_e_values = sorted(df_ens["n_e"].unique())
-    positions = list(range(len(n_e_values)))
-    series = {
-        "mean_score_inv": ("#1f77b4", "GT-invariant"),
-        "mean_score_noninv": ("#c75b5b", "GT-non-invariant"),
-    }
-
-    fig, ax = plt.subplots(figsize=(5, 3.5))
-    for col, (color, _) in series.items():
-        means, ci_lows, ci_highs = [], [], []
-        for n_e in n_e_values:
-            vals = df_ens[df_ens["n_e"] == n_e][col].dropna().to_numpy()
-            m, lo, hi = _mean_ci(vals)
-            means.append(m)
-            ci_lows.append(lo)
-            ci_highs.append(hi)
-        ax.plot(positions, means, marker="o", color=color)
-        ax.fill_between(positions, ci_lows, ci_highs, alpha=0.2, color=color)
-
-    ax.set_xticks(positions)
-    ax.set_xticklabels([str(v) for v in n_e_values])
-    ax.set_xlabel("Observations per environment ($n_e$)", fontsize=11)
-    ax.set_ylabel("Mean predictive score", fontsize=11)
-
-    _add_legend(fig, series)
-    plt.tight_layout(rect=(0, 0.08, 1, 1))
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
     plt.close()
@@ -749,7 +459,7 @@ def main() -> None:
     save_dir = os.path.join(repo_root, "results", DATASET)
     os.makedirs(save_dir, exist_ok=True)
 
-    df_acc, df_subsets, df_pvalues, df_best, df_ensemble = run_experiment(
+    df_acc, df_pvalues, df_ensemble = run_experiment(
         n_reps=args.n_reps,
         n_e_values=args.n_e_values,
         n_jobs=args.n_jobs,
@@ -757,55 +467,28 @@ def main() -> None:
     )
 
     acc_path = os.path.join(save_dir, "sample_size_1b.csv")
-    subsets_path = os.path.join(save_dir, "sample_size_1b_subsets.csv")
     pvalues_path = os.path.join(save_dir, "sample_size_1b_pvalues.csv")
-    best_path = os.path.join(save_dir, "sample_size_1b_best.csv")
     ensemble_path = os.path.join(save_dir, "sample_size_1b_ensemble.csv")
     df_acc.to_csv(acc_path, index=False)
-    df_subsets.to_csv(subsets_path, index=False)
     df_pvalues.to_csv(pvalues_path, index=False)
-    df_best.to_csv(best_path, index=False)
     df_ensemble.to_csv(ensemble_path, index=False)
     print(f"\nResults saved to {acc_path}")
-    print(f"Subset counts saved to {subsets_path}")
     print(f"P-values saved to {pvalues_path}")
-    print(f"Best subsets saved to {best_path}")
     print(f"Ensemble composition saved to {ensemble_path}")
 
     make_plot(df_acc, os.path.join(save_dir, f"sample_size_1b_{nreps}.pdf"))
-    make_subset_plot(
-        df_subsets, os.path.join(save_dir, f"sample_size_1b_subsets_{nreps}.pdf")
-    )
 
     if len(df_pvalues) > 0:
-        make_stable_blanket_plot(
-            df_pvalues,
-            os.path.join(save_dir, f"sample_size_1b_sb_acceptance_{nreps}.pdf"),
-        )
-        make_avg_accepted_size_plot(
-            df_pvalues, os.path.join(save_dir, f"sample_size_1b_avg_size_{nreps}.pdf")
-        )
         make_tpr_fpr_plot(
             df_pvalues, os.path.join(save_dir, f"sample_size_1b_tpr_fpr_{nreps}.pdf")
-        )
-        make_pairwise_auc_plot(
-            df_pvalues, os.path.join(save_dir, f"sample_size_1b_auc_{nreps}.pdf")
         )
     else:
         print("WARNING: no p-value data collected (all_results_ not available).")
 
-    if len(df_best) > 0:
-        make_best_noninv_plot(
-            df_best, os.path.join(save_dir, f"sample_size_1b_best_noninv_{nreps}.pdf")
-        )
     if len(df_ensemble) > 0:
-        make_ensemble_contamination_plot(
+        make_ensemble_ir3_plot(
             df_ensemble,
-            os.path.join(save_dir, f"sample_size_1b_ens_contamination_{nreps}.pdf"),
-        )
-        make_score_comparison_plot(
-            df_ensemble,
-            os.path.join(save_dir, f"sample_size_1b_score_comparison_{nreps}.pdf"),
+            os.path.join(save_dir, f"sample_size_1b_ens_ir3_{nreps}.pdf"),
         )
 
 

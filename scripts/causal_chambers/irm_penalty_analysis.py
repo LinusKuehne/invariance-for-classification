@@ -17,12 +17,7 @@ where logit = W^T x is the model's output.
 We evaluate the penalty at the ERM (pooled) optimum, not at
 an IRM-regularised solution to reveal the incentive structure for IRM.
 
-Analysis 1: individual features
-    For each feature in isolation, train ERM logistic regression using only
-    that feature and compute the IRM penalty at the ERM optimum. Answers:
-    "How invariant does each feature look to IRM when used alone?"
-
-Analysis 2: incremental addition to the stable blanket
+Incremental addition to the stable blanket:
     Start from the stable blanket S = {red, green, blue} and consider the
     sets S, S + {ir_3}, S + {vis_3}.
     Answers: "What tradeoff does IRM face when deciding to include ir_3 (or
@@ -126,82 +121,54 @@ def irm_penalty_at_erm_optimum(
     }
 
 
-def analysis_individual(df_train: pd.DataFrame) -> None:
-    results = []
-    for feat in ["ir_3", "vis_3"]:
-        res = irm_penalty_at_erm_optimum([feat], df_train)
-        results.append({"feature": feat, **res})
-
-    header = (
-        f"{'Feature':10s}  "
-        f"{'TrainBCE':>10s}  "
-        f"{'IRM Penalty':>12s}  "
-        f"{'Obj(λ=0.9)':>11s}  "
-        f"{'Obj(λ=0.5)':>11s}  "
-    )
-    print(header)
-    print("-" * len(header))
-
-    for r in results:
-        obj_09 = 0.1 * r["train_bce"] + 0.9 * r["total_penalty"]
-        obj_05 = 0.5 * r["train_bce"] + 0.5 * r["total_penalty"]
-        print(
-            f"{r['feature']:10s}  "
-            f"{r['train_bce']:10.4f}  "
-            f"{r['total_penalty']:12.4e}  "
-            f"{obj_09:11.4f}  "
-            f"{obj_05:11.4f}  "
-        )
-
-    print()
-
-
 def analysis_incremental(df_train: pd.DataFrame, df_test: pd.DataFrame) -> None:
-    feature_sets: list[tuple[str, list[str]]] = [
-        ("S  (stable blanket only)", STABLE_BLANKET),
-        ("S + ir_3", STABLE_BLANKET + ["ir_3"]),
-        ("S + vis_3", STABLE_BLANKET + ["vis_3"]),
+    feature_sets: list[tuple[str, list[str], str]] = [
+        ("S  (stable blanket only)", STABLE_BLANKET, r"$\SB(Y)$"),
+        ("S + ir_3", STABLE_BLANKET + ["ir_3"], r"$\SB(Y) \cup \{\mathtt{ir\_3}\}$"),
+        ("S + vis_3", STABLE_BLANKET + ["vis_3"], r"$\SB(Y) \cup \{\mathtt{vis\_3}\}$"),
     ]
 
     results = []
-    for name, feats in feature_sets:
+    for name, feats, tex_name in feature_sets:
         res = irm_penalty_at_erm_optimum(feats, df_train)
         results.append(
             {
                 "name": name,
+                "tex_name": tex_name,
                 "train_bce": res["train_bce"],
                 "total_penalty": res["total_penalty"],
             }
         )
 
-    # ── print table ──────────────────────────────────────────────────────────
-    header = (
-        f"{'Feature set':30s}  "
-        f"{'TrainBCE':>10s}  "
-        f"{'IRM Penalty':>12s}  "
-        f"{'Obj(λ=0.9)':>11s}  "
-        f"{'Obj(λ=0.5)':>11s}  "
-    )
-    print(header)
-    print("-" * len(header))
+    # ── print LaTeX table ─────────────────────────────────────────────────────
+    print(r"\begin{tabular}{@{}lccc@{}}")
+    print(r"    \toprule")
+    print(r"    Feature set")
+    print(r"      & $R_\mathrm{tr}$")
+    print(r"      & $\mathrm{pen}$")
+    print(r"      & Obj.\ \eqref{eq:IRMv1} ($\lambda=0.9$) \\")
+    print(r"    \midrule")
+
+    def fmt_sci(x: float) -> str:
+        s = f"{x:.3e}"
+        mantissa, exp = s.split("e")
+        exp_int = int(exp)
+        return rf"${mantissa} \times 10^{{{exp_int}}}$"
+
+    def fmt_num(x: float) -> str:
+        return f"${x:.3f}$"
 
     for r in results:
         obj_09 = 0.1 * r["train_bce"] + 0.9 * r["total_penalty"]
-        obj_05 = 0.5 * r["train_bce"] + 0.5 * r["total_penalty"]
         print(
-            f"{r['name']:30s}  "
-            f"{r['train_bce']:10.4f}  "
-            f"{r['total_penalty']:12.4e}  "
-            f"{obj_09:11.4f}  "
-            f"{obj_05:11.4f}  "
+            f"    {r['tex_name']} "
+            f"& {fmt_num(r['train_bce'])} "
+            f"& {fmt_sci(r['total_penalty'])} "
+            f"& {fmt_num(obj_09)} \\\\"
         )
 
-    print()
-    print("Key:")
-    print("  TrainBCE   = mean binary cross-entropy on all training environments")
-    print("  IRM Penalty= sum_e Penalty_e (IRMv1) at the ERM optimum")
-    print("  Obj(λ)     = (1-λ)·TrainBCE + λ·Penalty  (IRM training objective)")
-    print()
+    print(r"    \bottomrule")
+    print(r"  \end{tabular}")
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -227,11 +194,7 @@ def main() -> None:
     print(f"Stable blanket:{STABLE_BLANKET}")
     print()
 
-    print("── Analysis 1: Individual features ──────────────────────────────────────")
-    print()
-    analysis_individual(df_train)
-
-    print("── Analysis 2: Incremental addition to stable blanket ───────────────────")
+    print("── Incremental addition to stable blanket ───────────────────────────────")
     print()
     analysis_incremental(df_train, df_test)
 
