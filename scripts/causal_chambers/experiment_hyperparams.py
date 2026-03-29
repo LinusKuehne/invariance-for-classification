@@ -2,8 +2,8 @@
 Hyperparameter sensitivity analysis for Stabilized Classification (SC).
 
 For each dataset and repetition we compute p-values and fitted RF models for
-ALL 2^p feature subsets ONCE (using TramGCM + RF with alpha_inv=0 so every
-subset is scored).  We then sweep over (alpha_inv, alpha_pred) pairs cheaply:
+all 2^d feature subsets once (using TramGCM + RF with alpha_inv=0 so every
+subset is scored).  Then sweep over (alpha_inv, alpha_pred) pairs:
 
   1. Filter invariant subsets by alpha_inv threshold.
   2. Determine S_max = best-scoring invariant subset.
@@ -12,12 +12,8 @@ subset is scored).  We then sweep over (alpha_inv, alpha_pred) pairs cheaply:
      per repetition — typically 1-3 bootstraps instead of 7x7=49).
   4. Filter active subsets and ensemble-predict.
 
-Results are saved as CSVs and seaborn heatmaps (alpha_inv on x-axis,
-alpha_pred on y-axis).
-
 Usage
 -----
-    python experiment_hyperparams.py               # default: n_reps=25, n_obs=200
     python experiment_hyperparams.py --n-reps 5 --n-jobs 8
 """
 
@@ -37,13 +33,11 @@ from evaluate_OOD_predictions import (
 )
 from joblib import Parallel, delayed
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.utils import resample
 from tqdm import tqdm
 
 from invariance_for_classification import StabilizedClassificationClassifier
 from invariance_for_classification.estimators._stabilized import (
-    _aggregate_score,
-    _fit_model_helper,
+    _bootstrap_predictiveness_worker,
 )
 
 N_BOOTSTRAP = 250
@@ -54,41 +48,44 @@ N_BOOTSTRAP = 250
 # ---------------------------------------------------------------------------
 
 
-def _bootstrap_cutoff_scores(X, y, S_max, seed, n_bootstrap, n_jobs):
+def _bootstrap_cutoff_scores(
+    X,
+    y,
+    environment,
+    S_max,
+    seed,
+    n_bootstrap,
+    n_jobs,
+    model_random_state,
+):
     """Return n_bootstrap out-of-bag log-loss scores for feature subset S_max.
 
-    Replicates the SC bootstrap logic (pred_scoring="mean") with a fixed seed
-    so results are reproducible and independent of the SC internal RNG state.
+    Uses the same worker logic as StabilizedClassificationClassifier._compute_cutoff:
+    - bootstrap randomness comes from the sampled indices (seeded by `seed`)
+    - RF model randomness is fixed by `model_random_state` for all bootstrap draws
     """
 
-    def _one_sample(s):
-        rng = np.random.RandomState(s)
-        n = len(y)
-        indices = np.asarray(resample(np.arange(n), replace=True, random_state=rng))
-        oob = np.setdiff1d(np.arange(n), indices)
-        if len(oob) == 0:
-            return None
-
-        # Handle empty features by using _fit_model_helper exactly as SC does
-        X_tr = (
-            X[np.ix_(indices, list(S_max))]
-            if len(S_max) > 0
-            else np.zeros((len(indices), 0))
-        )
-        X_oo = (
-            X[np.ix_(oob, list(S_max))] if len(S_max) > 0 else np.zeros((len(oob), 0))
-        )
-
-        rf = RandomForestClassifier(
-            n_estimators=100, oob_score=False, random_state=s, n_jobs=1
-        )
-        model = _fit_model_helper(X_tr, y[indices], rf)
-        proba = model.predict_proba(X_oo)
-        return _aggregate_score(y[oob], proba, None, "mean")
+    pred_classifier = RandomForestClassifier(
+        n_estimators=100,
+        oob_score=True,
+        random_state=model_random_state,
+        n_jobs=1,
+    )
 
     rng_main = np.random.RandomState(seed)
     seeds = rng_main.randint(0, np.iinfo(np.int32).max, size=n_bootstrap)
-    scores = Parallel(n_jobs=n_jobs)(delayed(_one_sample)(s) for s in seeds)
+    scores = Parallel(n_jobs=n_jobs)(
+        delayed(_bootstrap_predictiveness_worker)(
+            s,
+            X,
+            y,
+            list(S_max),
+            pred_classifier,
+            "mean",
+            environment,
+        )
+        for s in seeds
+    )
     return [s for s in scores if s is not None]
 
 
@@ -101,6 +98,7 @@ def _apply_thresholds(
     all_results,
     X_train,
     y_enc,
+    E_train,
     X_test,
     a_inv,
     a_pred,
@@ -108,7 +106,7 @@ def _apply_thresholds(
     seed,
     n_jobs,
 ):
-    """Apply (a_inv, a_pred) to precomputed subset results; return proba array."""
+    """Apply thresholds and return (proba, n_invariant, n_predictive)."""
     # 1. Filter by invariance threshold
     invariant = [r for r in all_results if r["p_value"] >= a_inv]
     if not invariant:  # fallback: best p-value
@@ -120,10 +118,21 @@ def _apply_thresholds(
     # 3. Bootstrap predictive cutoff (cached per S_max)
     if S_max not in bootstrap_cache:
         bootstrap_cache[S_max] = _bootstrap_cutoff_scores(
-            X_train, y_enc, S_max, seed, N_BOOTSTRAP, n_jobs
+            X_train,
+            y_enc,
+            E_train,
+            S_max,
+            seed,
+            N_BOOTSTRAP,
+            n_jobs,
+            model_random_state=seed,
         )
     bs_scores = bootstrap_cache[S_max]
-    cutoff = np.quantile(bs_scores, a_pred) if bs_scores else -np.inf
+    cutoff = (
+        np.quantile(a=np.asarray(bs_scores, dtype=float), q=a_pred)
+        if bs_scores
+        else -np.inf
+    )
 
     # 4. Filter active subsets
     active = [r for r in invariant if r["RF_score"] >= cutoff]
@@ -137,7 +146,7 @@ def _apply_thresholds(
         subset = r["subset"]
         X_S = X_test[:, subset] if len(subset) > 0 else np.zeros((n_samples, 0))
         sum_proba += r["RF_model"].predict_proba(X_S)
-    return sum_proba / len(active)
+    return sum_proba / len(active), len(invariant), len(active)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +171,12 @@ def run_experiment(datasets, alpha_invs, alpha_preds, n_obs, n_reps, n_jobs, out
         acc_lists = {
             (a_inv, a_pred): [] for a_inv in alpha_invs for a_pred in alpha_preds
         }
+        inv_count_lists = {
+            (a_inv, a_pred): [] for a_inv in alpha_invs for a_pred in alpha_preds
+        }
+        pred_count_lists = {
+            (a_inv, a_pred): [] for a_inv in alpha_invs for a_pred in alpha_preds
+        }
 
         for rep in tqdm(range(n_reps), desc="  reps"):
             seed = 42 + rep
@@ -172,7 +187,7 @@ def run_experiment(datasets, alpha_invs, alpha_preds, n_obs, n_reps, n_jobs, out
             y_train = df_sub["Y"].to_numpy()
             E_train = df_sub["E"].to_numpy()
 
-            # ── Precompute p-values + RF models for ALL 2^p subsets (once per rep) ──
+            # ── Precompute p-values + RF models for all 2^d subsets (once per rep) ──
             # alpha_inv=0.0 ensures every subset is scored and fitted.
             # n_bootstrap=1 minimises wasted computation in SC.fit() — we redo
             # the bootstrap ourselves below with the full N_BOOTSTRAP samples.
@@ -199,10 +214,11 @@ def run_experiment(datasets, alpha_invs, alpha_preds, n_obs, n_reps, n_jobs, out
 
             for a_inv in alpha_invs:
                 for a_pred in alpha_preds:
-                    proba = _apply_thresholds(
+                    proba, n_invariant, n_predictive = _apply_thresholds(
                         all_results,
                         X_train,
                         y_enc,
+                        E_train,
                         X_test_all,
                         a_inv,
                         a_pred,
@@ -211,19 +227,24 @@ def run_experiment(datasets, alpha_invs, alpha_preds, n_obs, n_reps, n_jobs, out
                         n_jobs,
                     )
                     y_prob_pos = _extract_positive_proba(proba)
-                    y_pred = (proba[:, 1] >= 0.5).astype(int)
+                    y_pred_enc = (proba[:, 1] >= 0.5).astype(int)
+                    y_pred = clf.le_.inverse_transform(y_pred_enc)
                     per_env = _per_env_metrics(
                         y_test_all, y_prob_pos, y_pred, E_test_all
                     )
                     acc_lists[(a_inv, a_pred)].append(
                         min(r["accuracy"] for r in per_env)
                     )
+                    inv_count_lists[(a_inv, a_pred)].append(n_invariant)
+                    pred_count_lists[(a_inv, a_pred)].append(n_predictive)
 
         results = [
             {
                 "alpha_inv": a_inv,
                 "alpha_pred": a_pred,
-                "min_accuracy": np.mean(accs),
+                "worst_case_accuracy": np.mean(accs),
+                "n_invariant": float(np.mean(inv_count_lists[(a_inv, a_pred)])),
+                "n_predictive": float(np.mean(pred_count_lists[(a_inv, a_pred)])),
             }
             for (a_inv, a_pred), accs in acc_lists.items()
         ]
@@ -234,34 +255,61 @@ def run_experiment(datasets, alpha_invs, alpha_preds, n_obs, n_reps, n_jobs, out
 
         # ── Heatmap ──
         heatmap_data = df_res.pivot(
-            index="alpha_pred", columns="alpha_inv", values="min_accuracy"
+            index="alpha_pred", columns="alpha_inv", values="worst_case_accuracy"
         )
         heatmap_data = heatmap_data.sort_index(ascending=False)
+        inv_count_data = df_res.pivot(
+            index="alpha_pred", columns="alpha_inv", values="n_invariant"
+        )
+        pred_count_data = df_res.pivot(
+            index="alpha_pred", columns="alpha_inv", values="n_predictive"
+        )
+        inv_count_data = inv_count_data.reindex(
+            index=heatmap_data.index, columns=heatmap_data.columns
+        )
+        pred_count_data = pred_count_data.reindex(
+            index=heatmap_data.index, columns=heatmap_data.columns
+        )
 
-        fig, ax = plt.subplots(figsize=(9, 6))
+        acc_values = heatmap_data.to_numpy(dtype=float)
+        inv_values = inv_count_data.to_numpy(dtype=float)
+        pred_values = pred_count_data.to_numpy(dtype=float)
+        annotations = np.empty(heatmap_data.shape, dtype=object)
+        for i in range(heatmap_data.shape[0]):
+            for j in range(heatmap_data.shape[1]):
+                acc = acc_values[i, j]
+                n_inv = int(np.rint(inv_values[i, j]))
+                n_pred = int(np.rint(pred_values[i, j]))
+                annotations[i, j] = f"{acc:.3f}\n({n_inv},{n_pred})"
+
+        _, ax = plt.subplots(figsize=(9, 6))
         vmin = heatmap_data.values.min()
         vmax = heatmap_data.values.max()
-        sns.heatmap(
+        hm = sns.heatmap(
             heatmap_data,
             ax=ax,
-            cmap="viridis",
+            cmap="RdYlGn",
             vmin=vmin,
             vmax=vmax,
-            annot=True,
-            fmt=".3f",
-            annot_kws={"size": 9},
+            annot=annotations,
+            fmt="",
+            annot_kws={"size": 12},
             linewidths=0.5,
             linecolor="white",
-            cbar_kws={"label": "Min accuracy"},
+            cbar_kws={"label": "Worst-case accuracy"},
         )
-        ax.set_title(
-            f"SC Sensitivity — Dataset {dataset} (TramGCM + RF, n_reps={n_reps})"
-        )
-        ax.set_xlabel(r"$\alpha_{\mathrm{inv}}$")
-        ax.set_ylabel(r"$\alpha_{\mathrm{pred}}$")
+        colorbar = hm.collections[0].colorbar if hm.collections else None
+        if colorbar is not None:
+            colorbar.set_label("Worst-case accuracy", size=15)
+            colorbar.ax.tick_params(labelsize=12)
+
+        ax.set_title(f"Dataset {dataset}", fontsize=18)
+        ax.set_xlabel(r"$\alpha_{\mathrm{inv}}$", fontsize=15)
+        ax.set_ylabel(r"$\alpha_{\mathrm{class}}$", fontsize=15)
+        ax.tick_params(axis="both", labelsize=12)
         plt.tight_layout()
         out_path = os.path.join(out_dir, f"heatmap_{dataset}.png")
-        plt.savefig(out_path, dpi=150)
+        plt.savefig(out_path, dpi=450)
         plt.close()
         print(f"Saved heatmap for dataset {dataset} → {out_path}")
 
@@ -274,14 +322,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n-reps", type=int, default=25, help="Repetitions to average over"
     )
-    parser.add_argument("--n-jobs", type=int, default=1, help="Parallel jobs")
+    parser.add_argument("--n-jobs", type=int, default=12, help="Parallel jobs")
     parser.add_argument(
         "--out-dir", type=str, default="results/sensitivity", help="Output directory"
     )
     args = parser.parse_args()
 
-    alpha_invs = [0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.5]
-    alpha_preds = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7]
+    alpha_invs = [0.005, 0.01, 0.05, 0.1, 0.2]
+    alpha_preds = [0.005, 0.01, 0.05, 0.1, 0.2]
     datasets = ["1a", "1b", "2"]
 
     run_experiment(
