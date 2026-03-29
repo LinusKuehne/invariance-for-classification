@@ -293,20 +293,20 @@ def run_experiment(datasets, alpha_invs, alpha_preds, n_obs, n_reps, n_jobs, out
             vmax=vmax,
             annot=annotations,
             fmt="",
-            annot_kws={"size": 12},
+            annot_kws={"size": 16},
             linewidths=0.5,
             linecolor="white",
             cbar_kws={"label": "Worst-case accuracy"},
         )
         colorbar = hm.collections[0].colorbar if hm.collections else None
         if colorbar is not None:
-            colorbar.set_label("Worst-case accuracy", size=15)
-            colorbar.ax.tick_params(labelsize=12)
+            colorbar.set_label("Worst-case accuracy", size=19)
+            colorbar.ax.tick_params(labelsize=15)
 
-        ax.set_title(f"Dataset {dataset}", fontsize=18)
-        ax.set_xlabel(r"$\alpha_{\mathrm{inv}}$", fontsize=15)
-        ax.set_ylabel(r"$\alpha_{\mathrm{class}}$", fontsize=15)
-        ax.tick_params(axis="both", labelsize=12)
+        ax.set_title(f"Dataset {dataset}", fontsize=23)
+        ax.set_xlabel(r"$\alpha_{\mathrm{inv}}$", fontsize=19)
+        ax.set_ylabel(r"$\alpha_{\mathrm{class}}$", fontsize=19)
+        ax.tick_params(axis="both", labelsize=16)
         plt.tight_layout()
         out_path = os.path.join(out_dir, f"heatmap_{dataset}.png")
         plt.savefig(out_path, dpi=450)
