@@ -151,11 +151,17 @@ def _ci_half_width(values: np.ndarray, confidence: float = 0.95) -> float:
     return float(t_crit * se)
 
 
-def _load_min_acc(results_dir: str, dataset: str, n_obs: int) -> dict[str, np.ndarray]:
+def _load_metric(
+    results_dir: str,
+    dataset: str,
+    n_obs: int,
+    metric: str = "accuracy",
+    agg: str = "min",
+) -> dict[str, np.ndarray]:
     """
-    Load raw CSV and return {method: array_of_min_acc_per_rep}.
+    Load raw CSV and return {method: array_of_metric_per_rep}.
 
-    The min is taken over test environments within each rep.
+    The aggregation (min or max) is taken over test environments within each rep.
     """
     path = os.path.join(results_dir, dataset, f"OOD_raw_{dataset}_n{n_obs}.csv")
     if not os.path.exists(path):
@@ -166,8 +172,11 @@ def _load_min_acc(results_dir: str, dataset: str, n_obs: int) -> dict[str, np.nd
     out: dict[str, np.ndarray] = {}
     for method in df["method"].unique():
         m = df[df["method"] == method]
-        min_accs = m.groupby("rep")["accuracy"].min().to_numpy()
-        out[method] = min_accs
+        if agg == "min":
+            vals = m.groupby("rep")[metric].min().to_numpy()
+        else:
+            vals = m.groupby("rep")[metric].max().to_numpy()
+        out[method] = vals
     return out
 
 
@@ -207,12 +216,12 @@ def _fmt(mean: float, hw: float, decimals: int, bold: bool = False) -> str:
     return f"${inner}$"
 
 
-def _mean_acc(
+def _mean_metric(
     data: dict[str, dict[str, np.ndarray]],
     dataset: str,
     method: str,
 ) -> float | None:
-    """Return the mean worst-case accuracy for a method/dataset, or None."""
+    """Return the mean metric for a method/dataset, or None."""
     vals = data.get(dataset, {}).get(method)
     if vals is None or len(vals) == 0:
         return None
@@ -222,23 +231,30 @@ def _mean_acc(
 def _find_best_methods(
     data: dict[str, dict[str, np.ndarray]],
     csv_names: list[str],
+    lower_is_better: bool = False,
 ) -> dict[str, set[str]]:
-    """For each dataset, find which csv_names have the highest mean.
+    """For each dataset, find which csv_names have the best mean.
 
     Returns {dataset: set_of_best_csv_names}.
     """
     best: dict[str, set[str]] = {}
     for ds in DATASETS:
-        best_val = -1.0
+        best_val = float("inf") if lower_is_better else -float("inf")
         best_methods: set[str] = set()
         for name in csv_names:
-            m = _mean_acc(data, ds, name)
+            m = _mean_metric(data, ds, name)
             if m is None:
                 continue
-            if m > best_val + 1e-12:
+
+            is_better = (
+                (m < best_val - 1e-12) if lower_is_better else (m > best_val + 1e-12)
+            )
+            is_equal = abs(m - best_val) < 1e-12
+
+            if is_better:
                 best_val = m
                 best_methods = {name}
-            elif abs(m - best_val) < 1e-12:
+            elif is_equal:
                 best_methods.add(name)
         best[ds] = best_methods
     return best
@@ -267,14 +283,17 @@ def _cell(
 
 
 def build_table1(
-    data: dict[str, dict[str, np.ndarray]], decimals: int, n_obs: int
+    data: dict[str, dict[str, np.ndarray]],
+    decimals: int,
+    n_obs: int,
+    lower_is_better: bool = False,
 ) -> str:
     """Build Table 1: main results."""
     # Determine best per column (excluding oracle)
     all_non_oracle = [
         csv for csv, _ in TABLE1_LINEAR + TABLE1_NONLINEAR + TABLE1_BASELINES
     ]
-    best = _find_best_methods(data, all_non_oracle)
+    best = _find_best_methods(data, all_non_oracle, lower_is_better=lower_is_better)
 
     def _row(csv_name: str, latex_name: str) -> list[str]:
         cells = " & ".join(
@@ -646,16 +665,23 @@ def main(
     spider_output: str | None = None,
 ) -> None:
     # Load data for all datasets
-    data: dict[str, dict[str, np.ndarray]] = {}
+    data_acc: dict[str, dict[str, np.ndarray]] = {}
+    data_bce: dict[str, dict[str, np.ndarray]] = {}
     subset_data: dict[str, dict[str, tuple[float, float]]] = {}
     env_data: dict[str, dict[str, dict[int, np.ndarray]]] = {}
     for ds in DATASETS:
-        data[ds] = _load_min_acc(results_dir, ds, n_obs)
+        data_acc[ds] = _load_metric(
+            results_dir, ds, n_obs, metric="accuracy", agg="min"
+        )
+        data_bce[ds] = _load_metric(
+            results_dir, ds, n_obs, metric="bce_loss", agg="max"
+        )
         subset_data[ds] = _load_subset_counts(results_dir, ds, n_obs)
         env_data[ds] = _load_env_acc(results_dir, ds, n_obs)
 
-    table1 = build_table1(data, decimals, n_obs)
-    table2 = build_table2(data, subset_data, decimals, n_obs)
+    table1_acc = build_table1(data_acc, decimals, n_obs, lower_is_better=False)
+    table1_bce = build_table1(data_bce, decimals, n_obs, lower_is_better=True)
+    table2 = build_table2(data_acc, subset_data, decimals, n_obs)
 
     # Per-environment accuracy tables (one per dataset)
     env_tables: list[str] = []
@@ -666,10 +692,16 @@ def main(
 
     full = (
         "% =============================================================================\n"
-        "% Table 1: Main results\n"
+        "% Table 1: Main results (Worst-Case Accuracy)\n"
         "% =============================================================================\n"
         "\n"
-        f"{table1}\n"
+        f"{table1_acc}\n"
+        "\n\n"
+        "% =============================================================================\n"
+        "% Table 1b: Main results (Worst-Case BCE Loss)\n"
+        "% =============================================================================\n"
+        "\n"
+        f"{table1_bce}\n"
         "\n\n"
         "% =============================================================================\n"
         "% Table 2: Ensemble vs. best subset\n"
