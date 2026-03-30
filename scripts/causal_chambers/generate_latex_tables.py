@@ -316,7 +316,7 @@ def build_table1(
 
     # --- SC linear ---
     a(r"    % --- Stabilized classification (linear) --------------------------------")
-    a(r"    \multicolumn{4}{@{}l}{\textbf{Stabilized classification (linear)}} \\[2pt]")
+    a(r"    \multicolumn{4}{@{}l}{\textbf{SC (linear)}} \\[2pt]")
     for csv_name, latex_name in TABLE1_LINEAR:
         lines.extend(_row(csv_name, latex_name))
     a(r"    %")
@@ -324,9 +324,7 @@ def build_table1(
     # --- SC nonlinear ---
     a(r"    \midrule")
     a(r"    % --- Stabilized classification (nonlinear) -----------------------------")
-    a(
-        r"    \multicolumn{4}{@{}l}{\textbf{Stabilized classification (nonlinear)}} \\[2pt]"
-    )
+    a(r"    \multicolumn{4}{@{}l}{\textbf{SC (nonlinear)}} \\[2pt]")
     for csv_name, latex_name in TABLE1_NONLINEAR:
         lines.extend(_row(csv_name, latex_name))
 
@@ -408,7 +406,7 @@ def build_table2(
 
     # --- SC linear ---
     a(r"    % --- Stabilized classification (linear) --------------------------------")
-    a(r"    \multicolumn{5}{@{}l}{\textbf{Stabilized classification (linear)}} \\[2pt]")
+    a(r"    \multicolumn{5}{@{}l}{\textbf{SC (linear)}} \\[2pt]")
     for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_LINEAR):
         sp = r"\\[4pt]" if i == len(TABLE2_LINEAR) - 1 else r"\\[3pt]"
         lines.extend(
@@ -422,9 +420,7 @@ def build_table2(
     # --- SC nonlinear ---
     a(r"    % --- Stabilized classification (nonlinear) -----------------------------")
     a(r"    \midrule")
-    a(
-        r"    \multicolumn{5}{@{}l}{\textbf{Stabilized classification (nonlinear)}} \\[2pt]"
-    )
+    a(r"    \multicolumn{5}{@{}l}{\textbf{SC (nonlinear)}} \\[2pt]")
     for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_NONLINEAR):
         sp = r"\\" if i == len(TABLE2_NONLINEAR) - 1 else r"\\[3pt]"
         lines.extend(

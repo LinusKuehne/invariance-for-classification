@@ -21,7 +21,7 @@ def load_data(dataset: str) -> pd.DataFrame:
 def plot_combined(df_1a, df_1b, filename):
     plt.rcParams.update(
         {
-            "font.size": 18,
+            "font.size": 22,
             "text.usetex": True,
             "font.family": "sans-serif",
             "text.latex.preamble": r"\usepackage{amsfonts} \usepackage{amsmath}",
@@ -93,7 +93,7 @@ def plot_combined(df_1a, df_1b, filename):
         handles=legend_handles,
         loc="lower center",
         ncol=3,
-        fontsize=16,
+        fontsize=22,
         frameon=True,
         bbox_to_anchor=(0.5, -0.05),
     )
