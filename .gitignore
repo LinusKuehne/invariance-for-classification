@@ -215,3 +215,8 @@ dev_scripts/
 .credentials
 results/
 tmp/
+synthetic_stable_blanket_experiments/.mplconfig
+synthetic_stable_blanket_experiments/old_results
+outputs-simple
+outputs
+outputs-lingauss
