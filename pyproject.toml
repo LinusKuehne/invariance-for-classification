@@ -78,10 +78,6 @@ line-ending = "lf"
 skip-magic-trailing-comma = false
 docstring-code-format = true
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
-
 [tool.mypy]
 ignore_missing_imports = true
 strict_optional = true
