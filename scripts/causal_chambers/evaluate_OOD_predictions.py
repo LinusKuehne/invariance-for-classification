@@ -47,7 +47,6 @@ Results are saved to: <repo_root>/results/<dataset>/
 USAGE
 ================================================================================
     python evaluate_OOD_predictions.py --dataset d_lin
-    python evaluate_OOD_predictions.py --dataset 2 --n-obs 200 --n-reps 20 --n-jobs 10
 
     # All flags:
     python evaluate_OOD_predictions.py --dataset d_lin --n-obs 200 --n-reps 20 --n-jobs 10 --verbose
