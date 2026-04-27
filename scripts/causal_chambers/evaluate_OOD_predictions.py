@@ -46,11 +46,11 @@ Results are saved to: <repo_root>/results/<dataset>/
 ================================================================================
 USAGE
 ================================================================================
-    python evaluate_OOD_predictions.py --dataset 1a
+    python evaluate_OOD_predictions.py --dataset d_lin
     python evaluate_OOD_predictions.py --dataset 2 --n-obs 200 --n-reps 20 --n-jobs 10
 
     # All flags:
-    python evaluate_OOD_predictions.py --dataset 1a --n-obs 200 --n-reps 20 --n-jobs 10 --verbose
+    python evaluate_OOD_predictions.py --dataset d_lin --n-obs 200 --n-reps 20 --n-jobs 10 --verbose
 """
 
 from __future__ import annotations
@@ -89,30 +89,30 @@ from invariance_for_classification import StabilizedClassificationClassifier
 SEED = 42
 
 STABLE_BLANKETS: dict[str, list[str]] = {
-    "1a": ["red", "green", "blue", "vis_3"],
-    "1b": ["red", "green", "blue", "vis_3"],
-    "2": ["red", "green", "blue"],
+    "d_lin": ["red", "green", "blue", "vis_3"],
+    "d_nonlin": ["red", "green", "blue", "vis_3"],
+    "d_spur": ["red", "green", "blue"],
 }
 
 NORMAL_COLS: dict[str, list[str]] = {
-    "1a": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
-    "1b": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
-    "2": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
+    "d_lin": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "d_nonlin": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "d_spur": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
 }
 
 # SC invariance test configurations:
 # (display_name, invariance_test, test_classifier_type or None)
 # Limited to those appearing in the paper tables.
 SC_CONFIGS: list[tuple[str, str, str | None]] = [
-    ("DeLong(RF)", "delong", "RF"),
-    ("DeLong(LR)", "delong", "LR"),
-    ("InvEnvPred(RF)", "inv_env_pred", "RF"),
+    # ("DeLong(RF)", "delong", "RF"),
+    # ("DeLong(LR)", "delong", "LR"),
+    # ("InvEnvPred(RF)", "inv_env_pred", "RF"),
     ("Residual(RF)", "inv_residual", "RF"),
-    ("Residual(LR)", "inv_residual", "LR"),
-    ("TramGCM(RF)", "tram_gcm", "RF"),
+    # ("Residual(LR)", "inv_residual", "LR"),
+    # ("TramGCM(RF)", "tram_gcm", "RF"),
     ("TramGCM(LR)", "tram_gcm", "LR"),
-    ("WGCM_est", "wgcm_est", None),
-    ("WGCM_fix", "wgcm_fix", None),
+    # ("WGCM_est", "wgcm_est", None),
+    # ("WGCM_fix", "wgcm_fix", None),
 ]
 
 
@@ -583,7 +583,7 @@ def compute_summary(
 
 
 def main(
-    dataset: str = "1a",
+    dataset: str = "d_lin",
     n_obs_per_env: int = 200,
     n_reps: int = 20,
     n_jobs: int = 10,
@@ -857,9 +857,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="1a",
-        choices=["1a", "1b", "2"],
-        help="Dataset base name (default: 1a).",
+        default="d_lin",
+        choices=["d_lin", "d_nonlin", "d_spur"],
+        help="Dataset base name (default: d_lin).",
     )
     parser.add_argument(
         "--n-obs",

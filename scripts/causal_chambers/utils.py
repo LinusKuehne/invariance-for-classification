@@ -43,8 +43,8 @@ def wait_for_completion(rlab):
         status = rlab.get_experiments(verbose=False)[0]["status"]
 
 
-def reference_setting_1(random_state, rng, n, pol_1_levels):
-    """Generate reference setting for dataset 1 (distr. of variables not specifically intervened on)."""
+def reference_setting_lin_nonlin(random_state, rng, n, pol_1_levels):
+    """Generate reference setting for dataset D-lin/D-nonlin (distr. of variables not specifically intervened on)."""
     inputs = {
         "pol_1": np.sort(rng.choice(pol_1_levels, size=n)),
         "red": sample_truncnorm_integers(
@@ -76,13 +76,13 @@ def reference_setting_1(random_state, rng, n, pol_1_levels):
     return inputs
 
 
-def produce_dataset_1(
+def produce_dataset_lin_nonlin(
     pos_class_values,
     all_interventions,
     pol_1_levels,
     dataset_type="train",
     seed=42,
-    dataset_name="data/1a",
+    dataset_name="data/d_lin",
     n_per_env=1000,
 ):
     """Generate causal chambers data and store it as csv."""
@@ -103,7 +103,7 @@ def produce_dataset_1(
     print(f"Submitting {dataset_type} experiments...")
     for i, intervention in enumerate(interventions):
         # start with reference setting and then apply intervention (if applicable)
-        inputs = reference_setting_1(seed + i, rng, n_per_env, pol_1_levels)
+        inputs = reference_setting_lin_nonlin(seed + i, rng, n_per_env, pol_1_levels)
         for target, values in intervention.items():
             inputs[target] = values
 

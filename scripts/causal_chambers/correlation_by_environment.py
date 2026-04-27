@@ -31,10 +31,10 @@ def main() -> None:
         nargs="*",
         type=Path,
         default=[
-            Path("scripts/causal_chambers/data/2_train.csv"),
-            Path("scripts/causal_chambers/data/2_test.csv"),
+            Path("scripts/causal_chambers/data/d_spur_train.csv"),
+            Path("scripts/causal_chambers/data/d_spur_test.csv"),
         ],
-        help="CSV files to process. Defaults to 2_train.csv and 2_test.csv.",
+        help="CSV files to process. Defaults to d_spur_train.csv and d_spur_test.csv.",
     )
     args = parser.parse_args()
 

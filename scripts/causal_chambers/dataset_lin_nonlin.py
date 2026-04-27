@@ -1,11 +1,11 @@
 """
-Dataset 1
+Dataset D-lin and D-nonlin
 ---------
 We set pol_1 (source node) to discrete levels and Y is a deterministic function of pol_1 only (Y=1 iff pol_1 in pos_class_values).
 
-1a: "Linear Y": pol_1 in {0, 30} with Y = 1{pol_1=30}.
+D-lin: "Linear Y": pol_1 in {0, 30} with Y = 1{pol_1=30}.
 
-1b: "Nonlinear Y": pol_1 in {0, 20, 30, 50} with Y = 1{pol_1 in {20, 30}}.
+D-nonlin: "Nonlinear Y": pol_1 in {0, 20, 30, 50} with Y = 1{pol_1 in {20, 30}}.
      vis_3 is monotonic in pol_1 (Malus' law), but Y is non-monotonic
      (Y=0: vis_3 at extremes, Y=1: vis_3 in mid-range)
      Linear classifiers on vis_3 cannot separate the classes;
@@ -15,7 +15,7 @@ Stable blanket: {red, green, blue, vis_3}.
 """
 
 import numpy as np
-from utils import produce_dataset_1, sample_truncnorm_integers
+from utils import produce_dataset_lin_nonlin, sample_truncnorm_integers
 
 N_TRAIN = 10000
 N_TEST = 5000
@@ -115,51 +115,51 @@ all_interventions = {
 
 
 def main():
-    # ---- dataset 1a -------------------------------------
+    # ---- dataset D-lin -------------------------------------
 
     # generate training dataset
-    produce_dataset_1(
+    produce_dataset_lin_nonlin(
         pos_class_values=POS_CLASS_VALUES_A,
         all_interventions=all_interventions,
         pol_1_levels=POL_1_LEVELS_A,
         dataset_type="train",
         seed=SEED,
-        dataset_name="data/1a",
+        dataset_name="data/d_lin",
         n_per_env=N_TRAIN,
     )
 
     # generate test dataset
-    produce_dataset_1(
+    produce_dataset_lin_nonlin(
         pos_class_values=POS_CLASS_VALUES_A,
         all_interventions=all_interventions,
         pol_1_levels=POL_1_LEVELS_A,
         dataset_type="test",
         seed=SEED_TEST,
-        dataset_name="data/1a",
+        dataset_name="data/d_lin",
         n_per_env=N_TEST,
     )
 
-    # ---- dataset 1b -------------------------------------
+    # ---- dataset D-nonlin -------------------------------------
 
     # generate training dataset
-    produce_dataset_1(
+    produce_dataset_lin_nonlin(
         pos_class_values=POS_CLASS_VALUES_B,
         all_interventions=all_interventions,
         pol_1_levels=POL_1_LEVELS_B,
         dataset_type="train",
         seed=SEED,
-        dataset_name="data/1b",
+        dataset_name="data/d_nonlin",
         n_per_env=N_TRAIN,
     )
 
     # generate test dataset
-    produce_dataset_1(
+    produce_dataset_lin_nonlin(
         pos_class_values=POS_CLASS_VALUES_B,
         all_interventions=all_interventions,
         pol_1_levels=POL_1_LEVELS_B,
         dataset_type="test",
         seed=SEED_TEST,
-        dataset_name="data/1b",
+        dataset_name="data/d_nonlin",
         n_per_env=N_TEST,
     )
 

@@ -1,5 +1,5 @@
 """
-Dataset 2
+Dataset D-spur
 ---------
 Two-stage data generation process with feedback loop.
 1. Generate R/G/B -> measure ir_1 -> compute Y
@@ -30,7 +30,7 @@ SEED_TEST = SEED + 1000
 rlab = lab.Lab(os.path.join(DIR, ".credentials"))
 
 
-def produce_dataset_2(dataset_type="train"):
+def produce_dataset_d_spur(dataset_type="train"):
     if dataset_type == "train":
         seed = SEED
         n = N_TRAIN
@@ -144,11 +144,11 @@ def produce_dataset_2(dataset_type="train"):
 
     df = pd.concat(dataframes, ignore_index=True)
 
-    df[SAVE_COLS].to_csv(DIR + f"/data/2_{dataset_type}.csv", index=False)
+    df[SAVE_COLS].to_csv(DIR + f"/data/d_spur_{dataset_type}.csv", index=False)
 
 
 def reference_setting_2(random_state, n):
-    """Generate reference setting for dataset 2 (distr. of variables not specifically intervened on)."""
+    """Generate reference setting for dataset D-spur (distr. of variables not specifically intervened on)."""
     inputs = {
         "red": sample_truncnorm_integers(
             n,
@@ -262,8 +262,8 @@ all_interventions = {
 
 
 def main():
-    produce_dataset_2(dataset_type="train")
-    produce_dataset_2(dataset_type="test")
+    produce_dataset_d_spur(dataset_type="train")
+    produce_dataset_d_spur(dataset_type="test")
 
 
 if __name__ == "__main__":

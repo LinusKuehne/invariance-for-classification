@@ -1,6 +1,6 @@
 """
 Verify hypothesis: subsets including ir_3 or vis_3 only rarely get p-value > 0.05
-for TramGCM(LR) and TramGCM(RF) on dataset 2.
+for TramGCM(LR) and TramGCM(RF) on dataset D-spur.
 """
 
 import json
@@ -11,9 +11,12 @@ import pandas as pd
 
 ALPHA = 0.05
 TESTS = ["TramGCM(LR)", "TramGCM(RF)"]
+DATASET = "d_spur"
 
 repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-pvalues_path = os.path.join(repo_root, "results", "2", "OOD_sc_pvalues_2_n200.csv")
+pvalues_path = os.path.join(
+    repo_root, "results", DATASET, f"OOD_sc_pvalues_{DATASET}_n200.csv"
+)
 
 df = pd.read_csv(pvalues_path)
 df_tramgcm = df[df["sc_config"].isin(TESTS)].copy()

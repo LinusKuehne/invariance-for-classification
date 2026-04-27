@@ -305,7 +305,7 @@ def run_experiment(datasets, alpha_invs, alpha_preds, n_obs, n_reps, n_jobs, out
 
         ax.set_title(f"Dataset {dataset}", fontsize=23)
         ax.set_xlabel(r"$\alpha_{\mathrm{inv}}$", fontsize=19)
-        ax.set_ylabel(r"$\alpha_{\mathrm{class}}$", fontsize=19)
+        ax.set_ylabel(r"$\alpha_{\mathrm{pred}}$", fontsize=19)
         ax.tick_params(axis="both", labelsize=16)
         plt.tight_layout()
         out_path = os.path.join(out_dir, f"heatmap_{dataset}.png")
@@ -330,7 +330,7 @@ if __name__ == "__main__":
 
     alpha_invs = [0.005, 0.01, 0.05, 0.1, 0.2]
     alpha_preds = [0.005, 0.01, 0.05, 0.1, 0.2]
-    datasets = ["1a", "1b", "2"]
+    datasets = ["d_lin", "d_nonlin", "d_spur"]
 
     run_experiment(
         datasets,

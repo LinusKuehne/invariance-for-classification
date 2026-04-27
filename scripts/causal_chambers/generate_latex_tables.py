@@ -2,7 +2,7 @@
 Generate LaTeX tables from OOD evaluation results.
 
 Reads the raw per-rep CSV files produced by evaluate_OOD_predictions.py
-for datasets 1a, 1b, and 2, and outputs two LaTeX tables:
+for datasets d_lin, d_nonlin, and d_spur, and outputs two LaTeX tables:
 
   1. tab:main-results          - worst-case accuracy for all methods (ensemble)
   2. tab:appendix-ensemble-vs-best - ensemble vs. best-subset for SC methods
@@ -34,7 +34,7 @@ from scipy import stats
 # configuration
 # =============================================================================
 
-DATASETS = ["1a", "1b", "2"]
+DATASETS = ["d_lin", "d_nonlin", "d_spur"]
 
 # Mapping: (csv_method_name) → LaTeX display name
 # For SC methods the csv name is like "SC Residual(RF), pred=RF"
@@ -296,9 +296,9 @@ def build_table1(
     a(r"\begin{tabular}{@{}lccc@{}}")
     a(r"    \toprule")
     a(r"    Method")
-    a(r"      & {Dataset 1a}")
-    a(r"      & {Dataset 1b}")
-    a(r"      & {Dataset 2} \\")
+    a(r"      & {Dataset D-lin}")
+    a(r"      & {Dataset D-nonlin}")
+    a(r"      & {Dataset D-spur} \\")
     a(r"    \midrule")
     a(r"    %")
 
@@ -386,9 +386,9 @@ def build_table2(
     a(r"\begin{tabular}{@{}lllll@{}}")
     a(r"    \toprule")
     a(r"    Method & Aggregation")
-    a(r"      & {Dataset 1a}")
-    a(r"      & {Dataset 1b}")
-    a(r"      & {Dataset 2} \\")
+    a(r"      & {Dataset D-lin}")
+    a(r"      & {Dataset D-nonlin}")
+    a(r"      & {Dataset D-spur} \\")
     a(r"    \midrule")
     a(r"    %")
 
@@ -463,7 +463,11 @@ def build_spider_charts(
     *methods* is a list of (csv_name, display_label) pairs; colors are taken from
     SPIDER_COLORS in order.
     """
-    dataset_labels = {"1a": "Dataset 1a", "1b": "Dataset 1b", "2": "Dataset 2"}
+    dataset_labels = {
+        "d_lin": "Dataset D-lin",
+        "d_nonlin": "Dataset D-nonlin",
+        "d_spur": "Dataset D-spur",
+    }
 
     fig, axes = plt.subplots(1, 3, subplot_kw=dict(polar=True), figsize=(13, 4.5))
 
@@ -583,64 +587,6 @@ def _load_env_acc(
     return out
 
 
-def _env_cell(
-    env_data: dict[str, dict[int, np.ndarray]],
-    method: str,
-    env: int,
-    decimals: int,
-    bold: bool = False,
-) -> str:
-    """Produce one table cell (mean ± CI) for a given method and environment."""
-    vals = env_data.get(method, {}).get(env)
-    if vals is None or len(vals) == 0:
-        return "---"
-    mean = float(np.mean(vals))
-    hw = _ci_half_width(vals)
-    return _fmt(mean, hw, decimals, bold=bold)
-
-
-def build_env_acc_table(
-    env_data: dict[str, dict[int, np.ndarray]],
-    dataset: str,
-    decimals: int,
-) -> str:
-    """Build a per-environment accuracy table for one dataset."""
-    # Collect all test environments present in the data
-    all_envs: set[int] = set()
-    for method_envs in env_data.values():
-        all_envs.update(method_envs.keys())
-    envs = sorted(all_envs)
-
-    n_methods = len(ENV_TABLE_METHODS)
-    col_spec = "@{}l" + "c" * n_methods + "@{}"
-
-    lines: list[str] = []
-    a = lines.append
-
-    a(rf"\begin{{tabular}}{{{col_spec}}}")
-    a(r"    \toprule")
-
-    # Header row
-    header_cells = " & ".join(
-        rf"\rotatebox{{90}}{{\strut {lname}}}" for _, lname in ENV_TABLE_METHODS
-    )
-    a(rf"    Test env & {header_cells} \\")
-    a(r"    \midrule")
-
-    for env in envs:
-        cells: list[str] = []
-        for csv_name, _ in ENV_TABLE_METHODS:
-            cells.append(_env_cell(env_data, csv_name, env, decimals, bold=False))
-
-        row_cells = " & ".join(cells)
-        a(rf"    {env} & {row_cells} \\")
-
-    a(r"    \bottomrule")
-    a(r"\end{tabular}")
-
-    return "\n".join(lines)
-
-
 def main(
     results_dir: str,
     output: str,
@@ -667,13 +613,6 @@ def main(
     table1_bce = build_table1(data_bce, decimals, n_obs, lower_is_better=True)
     table2 = build_table2(data_acc, subset_data, decimals, n_obs)
 
-    # Per-environment accuracy tables (one per dataset)
-    env_tables: list[str] = []
-    for ds in DATASETS:
-        t = build_env_acc_table(env_data[ds], ds, decimals)
-        env_tables.append(f"% --- Dataset {ds} ---\n{t}")
-    env_tables_str = "\n\n".join(env_tables)
-
     full = (
         "% =============================================================================\n"
         "% Table 1: Main results (Worst-Case Accuracy)\n"
@@ -693,11 +632,6 @@ def main(
         "\n"
         f"{table2}\n"
         "\n\n"
-        "% =============================================================================\n"
-        "% Tables 3a/3b/3c: Per-environment accuracy\n"
-        "% =============================================================================\n"
-        "\n"
-        f"{env_tables_str}\n"
     )
 
     with open(output, "w") as f:
@@ -719,13 +653,13 @@ def main(
         env_data,
         SPIDER_METHODS_LINEAR,
         spider_linear,
-        grid_step_overrides={"1a": 0.05, "1b": 0.05, "2": 0.2},
+        grid_step_overrides={"d_lin": 0.05, "d_nonlin": 0.05, "d_spur": 0.2},
     )
     build_spider_charts(
         env_data,
         SPIDER_METHODS_NONLINEAR,
         spider_nonlinear,
-        grid_step_overrides={"1a": 0.05, "2": 0.2},
+        grid_step_overrides={"d_lin": 0.05, "d_spur": 0.2},
     )
     print("\nPreview (first 40 lines):\n")
     for line in full.splitlines()[:40]:

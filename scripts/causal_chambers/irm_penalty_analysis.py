@@ -1,5 +1,5 @@
 """
-IRM penalty analysis for dataset 2.
+IRM penalty analysis for dataset D-spur.
 
 Compute the IRMv1 penalty at the ERM (pooled logistic regression) optimum,
 following the original IRMv1 formulation
@@ -40,6 +40,7 @@ from sklearn.preprocessing import StandardScaler
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(DIR, "data")
+DATASET = "d_spur"
 
 # ── feature configuration ────────────────────────────────────────────────────
 
@@ -51,8 +52,14 @@ STABLE_BLANKET = ["red", "green", "blue"]
 
 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    df_train = pd.read_csv(os.path.join(DATA_DIR, "2_train.csv"))
-    df_test = pd.read_csv(os.path.join(DATA_DIR, "2_test.csv"))
+    train_path = os.path.join(DATA_DIR, f"{DATASET}_train.csv")
+    test_path = os.path.join(DATA_DIR, f"{DATASET}_test.csv")
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(f"Missing train file: {train_path}")
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(f"Missing test file: {test_path}")
+    df_train = pd.read_csv(train_path)
+    df_test = pd.read_csv(test_path)
     return df_train, df_test
 
 

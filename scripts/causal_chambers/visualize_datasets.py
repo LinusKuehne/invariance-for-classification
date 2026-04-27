@@ -18,7 +18,7 @@ def load_data(dataset: str) -> pd.DataFrame:
     return pd.read_csv(file_path)
 
 
-def plot_combined(df_1a, df_1b, filename):
+def plot_combined(df_d_lin, df_d_nonlin, filename):
     plt.rcParams.update(
         {
             "font.size": 22,
@@ -30,7 +30,10 @@ def plot_combined(df_1a, df_1b, filename):
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
     for ax, df, ds in zip(
-        axes, [df_1a, df_1b], ["Dataset 1a", "Dataset 1b"], strict=False
+        axes,
+        [df_d_lin, df_d_nonlin],
+        ["Dataset D-lin", "Dataset D-nonlin"],
+        strict=False,
     ):
         df_plot = df.copy()
         df_plot["Y_cat"] = df_plot["Y"].astype(str)
@@ -105,8 +108,8 @@ def plot_combined(df_1a, df_1b, filename):
 
 def main():
     print("Loading data...")
-    df_1a = load_data("1a")
-    df_1b = load_data("1b")
+    df_d_lin = load_data("d_lin")
+    df_d_nonlin = load_data("d_nonlin")
 
     print("Generating figures...")
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -116,8 +119,8 @@ def main():
     plot_path = os.path.join(results_dir, "combined_density_prob_vis3.png")
 
     plot_combined(
-        df_1a,
-        df_1b,
+        df_d_lin,
+        df_d_nonlin,
         filename=plot_path,
     )
 

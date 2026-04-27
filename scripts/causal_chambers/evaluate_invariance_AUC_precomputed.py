@@ -8,8 +8,8 @@ and computes the AUC without re-running any tests or re-subsampling data.
 ================================================================================
 USAGE
 ================================================================================
-    python evaluate_invariance_AUC_from_OOD.py --dataset 1a
-    python evaluate_invariance_AUC_from_OOD.py --dataset 2 --n-obs 200
+    python evaluate_invariance_AUC_from_OOD.py --dataset d_lin
+    python evaluate_invariance_AUC_from_OOD.py --n-obs 200 --generate-latex-table --decimals 3
 """
 
 from __future__ import annotations
@@ -29,12 +29,12 @@ from scipy import stats
 # global configuration
 # =============================================================================
 
-DATASETS = ["1a", "1b", "2"]
+DATASETS = ["d_lin", "d_nonlin", "d_spur"]
 
 NORMAL_COLS: dict[str, list[str]] = {
-    "1a": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
-    "1b": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
-    "2": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
+    "d_lin": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "d_nonlin": ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"],
+    "d_spur": ["Y", "red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3", "E"],
 }
 
 
@@ -45,7 +45,7 @@ NORMAL_COLS: dict[str, list[str]] = {
 
 def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]]:
     """Return set of ground-truth invariant subsets for a given dataset."""
-    if name in ["1a", "1b"]:
+    if name in ["d_lin", "d_nonlin"]:
         base_subsets = [
             frozenset(),
             frozenset({"red"}),
@@ -70,7 +70,7 @@ def _get_invariant_subsets(name: str, features: list[str]) -> set[frozenset[str]
                 invariant_subsets.add(base | addition)
         return invariant_subsets
 
-    if name == "2":
+    if name == "d_spur":
         base_subsets = [frozenset({"red", "green", "blue"})]
         optional_cols = [
             f for f in features if f not in {"red", "green", "blue", "ir_3", "vis_3"}
@@ -268,9 +268,9 @@ def build_auc_table(
     a(r"\begin{tabular}{@{}lccc@{}}")
     a(r"    \toprule")
     a(r"    Method")
-    a(r"      & {Dataset 1a}")
-    a(r"      & {Dataset 1b}")
-    a(r"      & {Dataset 2} \\")
+    a(r"      & {Dataset D-lin}")
+    a(r"      & {Dataset D-nonlin}")
+    a(r"      & {Dataset D-spur} \\")
     a(r"    \midrule")
     a(r"    %")
 
@@ -320,7 +320,7 @@ def generate_latex_table(
 
 
 def main(
-    dataset: str = "1a",
+    dataset: str = "d_lin",
     n_obs_per_env: int = 200,
 ) -> None:
     """Run the pairwise AUC evaluation using stored pvalues for one dataset."""
@@ -427,9 +427,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="1a",
-        choices=["1a", "1b", "2"],
-        help="Dataset base name (default: 1a).",
+        default="d_lin",
+        choices=["d_lin", "d_nonlin", "d_spur"],
+        help="Dataset base name (default: d_lin).",
     )
     parser.add_argument(
         "--n-obs",

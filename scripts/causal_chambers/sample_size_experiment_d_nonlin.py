@@ -1,5 +1,5 @@
 """
-Sample size dependence of stabilized classification (TramGCM-RF) on dataset 1b.
+Sample size dependence of stabilized classification (TramGCM-RF) on dataset d_nonlin.
 
 For each of N_REPS repetitions and each n_e in N_E_VALUES:
   1. Randomly sample n_e observations per training environment
@@ -12,8 +12,8 @@ Produces three plots:
   - Fraction of ensemble members containing ir_3 vs n_e
 
 Usage:
-    python sample_size_experiment_1b.py
-    python sample_size_experiment_1b.py --n-reps 2 --n-e-values 100 200
+    python sample_size_experiment_d_nonlin.py
+    python sample_size_experiment_d_nonlin.py --n-reps 2 --n-e-values 100 200
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from invariance_for_classification import StabilizedClassificationClassifier
 # =============================================================================
 
 SEED = 42
-DATASET = "1b"
+DATASET = "d_nonlin"
 N_E_VALUES_DEFAULT = [50, 100, 200, 300, 500, 750, 1000]
 NORMAL_COLS = ["Y", "red", "green", "blue", "ir_1", "vis_1", "ir_3", "vis_3", "E"]
 
@@ -88,8 +88,8 @@ def _subsample_train(
     return pd.concat(dfs, ignore_index=True)
 
 
-def _gt_invariant_subsets_1b(features: list[str]) -> set[frozenset[str]]:
-    """Ground truth invariant subsets for dataset 1b (same logic as evaluate_all_tests.py)."""
+def _gt_invariant_subsets_d_nonlin(features: list[str]) -> set[frozenset[str]]:
+    """Ground truth invariant subsets for dataset d_nonlin (same logic as evaluate_all_tests.py)."""
     base = [
         frozenset(),
         frozenset({"red"}),
@@ -151,7 +151,7 @@ def run_experiment(
     y_test = df_test["Y"].to_numpy().astype(int)
     E_test = df_test["E"].to_numpy()
 
-    gt_invariant_subsets = _gt_invariant_subsets_1b(features)
+    gt_invariant_subsets = _gt_invariant_subsets_d_nonlin(features)
 
     print("=" * 60)
     print(f"Dataset         : {DATASET}")
@@ -290,8 +290,8 @@ def _mean_ci(vals: np.ndarray) -> tuple[float, float, float]:
 def make_plot(df: pd.DataFrame, output_path: str) -> None:
     n_e_values = sorted(df["n_e"].unique())
     series = {
-        "ensemble": ("#1f77b4", "Ensemble"),
-        "best": ("#ff7f0e", "Best subset"),
+        "ensemble": ("#1f77b4", "SC"),
+        "best": ("#ff7f0e", "IMP"),
     }
 
     fig, ax = plt.subplots(figsize=(5, 3.5))
@@ -434,7 +434,7 @@ def make_ensemble_ir3_plot(df_ens: pd.DataFrame, output_path: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sample size experiment for SC (TramGCM-RF) on dataset 1b."
+        description="Sample size experiment for SC (TramGCM-RF) on dataset d_nonlin."
     )
     parser.add_argument(
         "--n-reps", type=int, default=25, help="Number of repetitions (default: 25)."
@@ -466,9 +466,9 @@ def main() -> None:
         verbose=args.verbose,
     )
 
-    acc_path = os.path.join(save_dir, "sample_size_1b.csv")
-    pvalues_path = os.path.join(save_dir, "sample_size_1b_pvalues.csv")
-    ensemble_path = os.path.join(save_dir, "sample_size_1b_ensemble.csv")
+    acc_path = os.path.join(save_dir, "sample_size_d_nonlin.csv")
+    pvalues_path = os.path.join(save_dir, "sample_size_d_nonlin_pvalues.csv")
+    ensemble_path = os.path.join(save_dir, "sample_size_d_nonlin_ensemble.csv")
     df_acc.to_csv(acc_path, index=False)
     df_pvalues.to_csv(pvalues_path, index=False)
     df_ensemble.to_csv(ensemble_path, index=False)
@@ -476,11 +476,12 @@ def main() -> None:
     print(f"P-values saved to {pvalues_path}")
     print(f"Ensemble composition saved to {ensemble_path}")
 
-    make_plot(df_acc, os.path.join(save_dir, f"sample_size_1b_{nreps}.pdf"))
+    make_plot(df_acc, os.path.join(save_dir, f"sample_size_d_nonlin_{nreps}.pdf"))
 
     if len(df_pvalues) > 0:
         make_tpr_fpr_plot(
-            df_pvalues, os.path.join(save_dir, f"sample_size_1b_tpr_fpr_{nreps}.pdf")
+            df_pvalues,
+            os.path.join(save_dir, f"sample_size_d_nonlin_tpr_fpr_{nreps}.pdf"),
         )
     else:
         print("WARNING: no p-value data collected (all_results_ not available).")
@@ -488,7 +489,7 @@ def main() -> None:
     if len(df_ensemble) > 0:
         make_ensemble_ir3_plot(
             df_ensemble,
-            os.path.join(save_dir, f"sample_size_1b_ens_ir3_{nreps}.pdf"),
+            os.path.join(save_dir, f"sample_size_d_nonlin_ens_ir3_{nreps}.pdf"),
         )
 
 
