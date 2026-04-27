@@ -6,7 +6,9 @@ from synthetic_experiments.experiment import ExperimentConfig, run_experiment_su
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Synthetic stable blanket adversarial experiments")
+    p = argparse.ArgumentParser(
+        description="Synthetic stable blanket adversarial experiments"
+    )
     p.add_argument("--output-dir", type=str, default="outputs")
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--torch-num-threads", type=int, default=1)
@@ -29,10 +31,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--X6", action="store_true", dest="include_x6")
     p.add_argument("--lineargaussian", action="store_true")
     p.add_argument("--simple", action="store_true")
-    p.add_argument("--attack-mode", type=str, choices=["bound", "cost"], default="bound")
+    p.add_argument(
+        "--attack-mode", type=str, choices=["bound", "cost"], default="bound"
+    )
     p.add_argument("--disable-x1-intervention", action="store_true")
     p.add_argument("--bounds", type=float, nargs="+", default=[0.25, 0.5, 1.0, 2.0])
-    p.add_argument("--costs", type=float, nargs="+", default=[0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0])
+    p.add_argument(
+        "--costs", type=float, nargs="+", default=[0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
+    )
     p.add_argument("--max-perturbation-bound", type=float, default=100.0)
     p.add_argument("--objectives", type=str, nargs="+", default=["signed_error", "mse"])
     p.add_argument("--num-runs", type=int, default=3)

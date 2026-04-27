@@ -3,19 +3,17 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Sequence
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
-from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
-from tqdm.auto import tqdm
-
 from synthetic_experiments.adversary import optimize_attack
 from synthetic_experiments.experiment import configure_torch
 from synthetic_experiments.models import MLPRegressor, PredictorBundle, train_predictor
 from synthetic_experiments.scm import AttackMechanisms, NonlinearStableBlanketSCM
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
 
 METHOD_ORDER = [
     "parents",
@@ -126,7 +124,9 @@ class LearnedMinimaxSCM:
         self.x5_model = x5_model
         self.x5_residual_pool = x5_residual_pool.to(self.device)
         self.x6_model = x6_model
-        self.x6_residual_pool = None if x6_residual_pool is None else x6_residual_pool.to(self.device)
+        self.x6_residual_pool = (
+            None if x6_residual_pool is None else x6_residual_pool.to(self.device)
+        )
         self.x1_noise_scale = self.x1_residual_pool.std().clamp_min(1e-6)
         self.x4_noise_scale = self.x4_residual_pool.std().clamp_min(1e-6)
 
@@ -136,7 +136,9 @@ class LearnedMinimaxSCM:
         n: int,
         generator: torch.Generator | None,
     ) -> torch.Tensor:
-        indices = torch.randint(0, pool.shape[0], (n,), generator=generator, device=self.device)
+        indices = torch.randint(
+            0, pool.shape[0], (n,), generator=generator, device=self.device
+        )
         return pool.index_select(0, indices)
 
     def sample(
@@ -145,7 +147,9 @@ class LearnedMinimaxSCM:
         attack: AttackMechanisms | None = None,
         generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        x, y, _, _ = self.sample_with_intervention_info(n, attack=attack, generator=generator)
+        x, y, _, _ = self.sample_with_intervention_info(
+            n, attack=attack, generator=generator
+        )
         return x, y
 
     def sample_with_intervention_info(
@@ -192,7 +196,9 @@ class LearnedMinimaxSCM:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Minimax adversarial training on all variables")
+    p = argparse.ArgumentParser(
+        description="Minimax adversarial training on all variables"
+    )
     p.add_argument("--output-dir", type=str, default="outputs_minimax")
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--torch-num-threads", type=int, default=1)
@@ -205,12 +211,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--predictor-weight-decay", type=float, default=1e-5)
     p.add_argument("--attack-hidden-dim", type=int, default=64)
     p.add_argument("--attack-lr", type=float, default=1e-3)
-    p.add_argument("--attack-mode", type=str, choices=["bound", "cost"], default="bound")
+    p.add_argument(
+        "--attack-mode", type=str, choices=["bound", "cost"], default="bound"
+    )
     p.add_argument("--disable-x1-intervention", action="store_true")
     p.add_argument("--X6", action="store_true", dest="include_x6")
     p.add_argument("--train-intervention-bound", type=float, default=None)
-    p.add_argument("--bounds", type=float, nargs="+", default=[0.25, 0.5, 1.0, 2.0, 4.0])
-    p.add_argument("--costs", type=float, nargs="+", default=[0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0])
+    p.add_argument(
+        "--bounds", type=float, nargs="+", default=[0.25, 0.5, 1.0, 2.0, 4.0]
+    )
+    p.add_argument(
+        "--costs", type=float, nargs="+", default=[0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
+    )
     p.add_argument("--max-perturbation-bound", type=float, default=2.0)
     p.add_argument("--minimax-steps", type=int, default=2000)
     p.add_argument("--predictor-steps-per-iter", type=int, default=1)
@@ -226,7 +238,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--attack-batch-size", type=int, default=512)
     p.add_argument("--attack-eval-size", type=int, default=10000)
     p.add_argument("--num-runs", type=int, default=3)
-    p.add_argument("--methods", type=str, nargs="+", choices=METHOD_ORDER, default=METHOD_ORDER)
+    p.add_argument(
+        "--methods", type=str, nargs="+", choices=METHOD_ORDER, default=METHOD_ORDER
+    )
     return p.parse_args()
 
 
@@ -251,7 +265,9 @@ def _strength(delta_x1: torch.Tensor, delta_x4: torch.Tensor) -> torch.Tensor:
     return torch.mean(delta_x1.square() + delta_x4.square())
 
 
-def _standardize(x: torch.Tensor, x_mean: torch.Tensor, x_std: torch.Tensor) -> torch.Tensor:
+def _standardize(
+    x: torch.Tensor, x_mean: torch.Tensor, x_std: torch.Tensor
+) -> torch.Tensor:
     return (x - x_mean) / x_std
 
 
@@ -274,10 +290,17 @@ def _fit_equation_model(
     x_train_std = (x_train - x_mean) / x_std
     x_val_std = (x_val - x_mean) / x_std
 
-    model = MLPRegressor(x_train.shape[1], hidden_dim=hidden_dim, depth=depth).to(x_train.device)
+    model = MLPRegressor(x_train.shape[1], hidden_dim=hidden_dim, depth=depth).to(
+        x_train.device
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.MSELoss()
-    loader = DataLoader(TensorDataset(x_train_std, y_train), batch_size=batch_size, shuffle=True, num_workers=0)
+    loader = DataLoader(
+        TensorDataset(x_train_std, y_train),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+    )
 
     best_state: dict[str, torch.Tensor] | None = None
     best_val = float("inf")
@@ -310,7 +333,9 @@ def _fit_equation_model(
     return StandardizedEquationModel(model=model, x_mean=x_mean, x_std=x_std)
 
 
-def _sample_clean_datasets(config: MinimaxConfig, scm: NonlinearStableBlanketSCM, seed: int) -> tuple[torch.Tensor, ...]:
+def _sample_clean_datasets(
+    config: MinimaxConfig, scm: NonlinearStableBlanketSCM, seed: int
+) -> tuple[torch.Tensor, ...]:
     train_gen = torch.Generator(device=scm.device)
     val_gen = torch.Generator(device=scm.device)
     test_gen = torch.Generator(device=scm.device)
@@ -389,13 +414,19 @@ def _estimate_training_scm(
             **fit_kwargs,
         )
         with torch.no_grad():
-            x6_residual_pool = x_train[:, [5]] - x6_model.predict(torch.cat([x_train[:, [3]], y_train], dim=1))
+            x6_residual_pool = x_train[:, [5]] - x6_model.predict(
+                torch.cat([x_train[:, [3]], y_train], dim=1)
+            )
 
     with torch.no_grad():
         x1_residual_pool = x_train[:, [0]] - x1_model.predict(x_train[:, [1]])
-        y_residual_pool = y_train - y_model.predict(torch.cat([x_train[:, [0]], x_train[:, [1]]], dim=1))
+        y_residual_pool = y_train - y_model.predict(
+            torch.cat([x_train[:, [0]], x_train[:, [1]]], dim=1)
+        )
         x3_residual_pool = x_train[:, [2]] - x3_model.predict(y_train)
-        x4_residual_pool = x_train[:, [3]] - x4_model.predict(torch.cat([y_train, x_train[:, [1]]], dim=1))
+        x4_residual_pool = x_train[:, [3]] - x4_model.predict(
+            torch.cat([y_train, x_train[:, [1]]], dim=1)
+        )
         x5_residual_pool = x_train[:, [4]] - x5_model.predict(x_train[:, [3]])
 
     return LearnedMinimaxSCM(
@@ -415,7 +446,9 @@ def _estimate_training_scm(
         x5_model=x5_model,
         x5_residual_pool=x5_residual_pool.detach().clone(),
         x6_model=x6_model,
-        x6_residual_pool=None if x6_residual_pool is None else x6_residual_pool.detach().clone(),
+        x6_residual_pool=None
+        if x6_residual_pool is None
+        else x6_residual_pool.detach().clone(),
     )
 
 
@@ -469,9 +502,18 @@ def _train_minimax_predictor(
         intervene_on_x1=config.intervene_on_x1,
         include_x6=config.include_x6,
     )
-    x_train, y_train, x_val, y_val, x_test, y_test = _sample_clean_datasets(config, true_scm, run_id)
+    x_train, y_train, x_val, y_val, x_test, y_test = _sample_clean_datasets(
+        config, true_scm, run_id
+    )
     training_scm = (
-        _estimate_training_scm(config, true_scm=true_scm, x_train=x_train, y_train=y_train, x_val=x_val, y_val=y_val)
+        _estimate_training_scm(
+            config,
+            true_scm=true_scm,
+            x_train=x_train,
+            y_train=y_train,
+            x_val=x_val,
+            y_val=y_val,
+        )
         if use_learned_scm
         else true_scm
     )
@@ -486,6 +528,7 @@ def _train_minimax_predictor(
         hidden_dim=config.predictor_hidden_dim,
         depth=config.predictor_depth,
     ).to(true_scm.device)
+
     def build_attack(seed_offset: int) -> AttackMechanisms:
         torch.manual_seed(run_id + seed_offset)
         if torch.cuda.is_available():
@@ -512,9 +555,15 @@ def _train_minimax_predictor(
     best_val = float("inf")
 
     for step_idx in range(config.minimax_steps):
-        if config.adversary_reinit_interval > 0 and step_idx > 0 and step_idx % config.adversary_reinit_interval == 0:
+        if (
+            config.adversary_reinit_interval > 0
+            and step_idx > 0
+            and step_idx % config.adversary_reinit_interval == 0
+        ):
             attack = build_attack(seed_offset=22222 + step_idx)
-            attack_optimizer = torch.optim.Adam(attack.parameters(), lr=config.attack_lr)
+            attack_optimizer = torch.optim.Adam(
+                attack.parameters(), lr=config.attack_lr
+            )
 
         _set_requires_grad(attack, False)
         _set_requires_grad(predictor, True)
@@ -534,10 +583,12 @@ def _train_minimax_predictor(
         _set_requires_grad(attack, True)
         for _ in range(config.adversary_steps_per_iter):
             attack_optimizer.zero_grad(set_to_none=True)
-            x_adv, y_adv, delta_x1, delta_x4 = training_scm.sample_with_intervention_info(
-                config.minimax_batch_size,
-                attack=attack,
-                generator=train_gen,
+            x_adv, y_adv, delta_x1, delta_x4 = (
+                training_scm.sample_with_intervention_info(
+                    config.minimax_batch_size,
+                    attack=attack,
+                    generator=train_gen,
+                )
             )
             pred = predictor(_standardize(x_adv[:, subset_indices], x_mean, x_std))
             objective = _mse(pred, y_adv)
@@ -547,9 +598,9 @@ def _train_minimax_predictor(
             attack_loss.backward()
             attack_optimizer.step()
 
-        should_validate = ((step_idx + 1) % max(1, config.minimax_validation_interval) == 0) or (
-            step_idx + 1 == config.minimax_steps
-        )
+        should_validate = (
+            (step_idx + 1) % max(1, config.minimax_validation_interval) == 0
+        ) or (step_idx + 1 == config.minimax_steps)
         if should_validate:
             predictor.eval()
             robust_bundle = PredictorBundle(
@@ -577,14 +628,18 @@ def _train_minimax_predictor(
             )
             if robust_val.attacked_test_mse < best_val:
                 best_val = robust_val.attacked_test_mse
-                best_predictor_state = {k: v.detach().clone() for k, v in predictor.state_dict().items()}
+                best_predictor_state = {
+                    k: v.detach().clone() for k, v in predictor.state_dict().items()
+                }
 
     assert best_predictor_state is not None
     predictor.load_state_dict(best_predictor_state)
     predictor.eval()
 
     with torch.no_grad():
-        clean_test_mse = _mse(predictor(_standardize(x_test[:, subset_indices], x_mean, x_std)), y_test).item()
+        clean_test_mse = _mse(
+            predictor(_standardize(x_test[:, subset_indices], x_mean, x_std)), y_test
+        ).item()
 
     bundle = PredictorBundle(
         name=method_name,
@@ -609,7 +664,9 @@ def train_standard_predictors(
         intervene_on_x1=config.intervene_on_x1,
         include_x6=config.include_x6,
     )
-    x_train, y_train, x_val, y_val, x_test, y_test = _sample_clean_datasets(config, scm, run_id)
+    x_train, y_train, x_val, y_val, x_test, y_test = _sample_clean_datasets(
+        config, scm, run_id
+    )
     sets = {
         "parents": scm.graph_sets.parents,
         "stable_blanket": scm.graph_sets.stable_blanket,
@@ -681,20 +738,32 @@ def summarize_results(results: pd.DataFrame) -> pd.DataFrame:
     return summary.sort_values(["sweep_value", "method"])
 
 
-def save_minimax_plot(results: pd.DataFrame, output_dir: str | Path, attack_mode: str) -> None:
+def save_minimax_plot(
+    results: pd.DataFrame, output_dir: str | Path, attack_mode: str
+) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     x_label = "Intervention bound" if attack_mode == "bound" else "Adversary cost"
-    filename = "minimax_all_variables_vs_bound.png" if attack_mode == "bound" else "minimax_all_variables_vs_cost.png"
+    filename = (
+        "minimax_all_variables_vs_bound.png"
+        if attack_mode == "bound"
+        else "minimax_all_variables_vs_cost.png"
+    )
 
     plt.figure(figsize=(7, 4.5))
-    present_methods = [method for method in METHOD_ORDER if method in results["method"].unique()]
+    present_methods = [
+        method for method in METHOD_ORDER if method in results["method"].unique()
+    ]
     for method in present_methods:
         sub_results = results[results["method"] == method]
         if sub_results.empty:
             continue
-        stats = sub_results.groupby(["sweep_value"])["attacked_test_mse"].agg(["mean", "std", "count"]).reset_index()
+        stats = (
+            sub_results.groupby(["sweep_value"])["attacked_test_mse"]
+            .agg(["mean", "std", "count"])
+            .reset_index()
+        )
         stats["std"] = stats["std"].fillna(0.0)
         stats["sem"] = stats["std"] / stats["count"].clip(lower=1) ** 0.5
         stats["ci95_radius"] = 1.96 * stats["sem"]
@@ -726,10 +795,16 @@ def run_minimax_experiment(config: MinimaxConfig) -> tuple[pd.DataFrame, pd.Data
     progress = tqdm(total=total_tasks, desc="Minimax experiment", unit="run")
 
     for run_id in range(config.num_runs):
-        standard_predictors, standard_scm = train_standard_predictors(config, run_id=run_id)
+        standard_predictors, standard_scm = train_standard_predictors(
+            config, run_id=run_id
+        )
         trained_minimax_predictor: PredictorBundle | None = None
         trained_learned_minimax_predictor: PredictorBundle | None = None
-        if "minimax_all_variables" in config.methods and config.attack_mode == "bound" and config.train_intervention_bound is not None:
+        if (
+            "minimax_all_variables" in config.methods
+            and config.attack_mode == "bound"
+            and config.train_intervention_bound is not None
+        ):
             trained_minimax_predictor = train_minimax_predictor(
                 config,
                 run_id=run_id,
@@ -748,13 +823,17 @@ def run_minimax_experiment(config: MinimaxConfig) -> tuple[pd.DataFrame, pd.Data
                 cost=None,
             )
         for sweep_value in sweep_values:
-            bound = float(sweep_value if sweep_name == "bound" else config.max_perturbation_bound)
+            bound = float(
+                sweep_value if sweep_name == "bound" else config.max_perturbation_bound
+            )
             cost = float(sweep_value) if sweep_name == "cost" else None
 
             if "minimax_all_variables" in config.methods:
                 predictor = trained_minimax_predictor
                 if predictor is None:
-                    predictor = train_minimax_predictor(config, run_id=run_id, bound=bound, cost=cost)
+                    predictor = train_minimax_predictor(
+                        config, run_id=run_id, bound=bound, cost=cost
+                    )
                 attack_result = optimize_attack(
                     scm=standard_scm,
                     predictor=predictor,
@@ -779,15 +858,23 @@ def run_minimax_experiment(config: MinimaxConfig) -> tuple[pd.DataFrame, pd.Data
                         cost=float(cost or 0.0),
                         clean_test_mse=float(predictor.clean_test_mse),
                         attacked_test_mse=float(attack_result.attacked_test_mse),
-                        attack_objective_value=float(attack_result.best_objective_value),
-                        regularized_attack_value=float(attack_result.best_regularized_value),
-                        intervention_strength=float(attack_result.intervention_strength),
+                        attack_objective_value=float(
+                            attack_result.best_objective_value
+                        ),
+                        regularized_attack_value=float(
+                            attack_result.best_regularized_value
+                        ),
+                        intervention_strength=float(
+                            attack_result.intervention_strength
+                        ),
                     )
                 )
             if "minimax_learned_scm_all_variables" in config.methods:
                 predictor = trained_learned_minimax_predictor
                 if predictor is None:
-                    predictor = train_learned_scm_minimax_predictor(config, run_id=run_id, bound=bound, cost=cost)
+                    predictor = train_learned_scm_minimax_predictor(
+                        config, run_id=run_id, bound=bound, cost=cost
+                    )
                 attack_result = optimize_attack(
                     scm=standard_scm,
                     predictor=predictor,
@@ -812,9 +899,15 @@ def run_minimax_experiment(config: MinimaxConfig) -> tuple[pd.DataFrame, pd.Data
                         cost=float(cost or 0.0),
                         clean_test_mse=float(predictor.clean_test_mse),
                         attacked_test_mse=float(attack_result.attacked_test_mse),
-                        attack_objective_value=float(attack_result.best_objective_value),
-                        regularized_attack_value=float(attack_result.best_regularized_value),
-                        intervention_strength=float(attack_result.intervention_strength),
+                        attack_objective_value=float(
+                            attack_result.best_objective_value
+                        ),
+                        regularized_attack_value=float(
+                            attack_result.best_regularized_value
+                        ),
+                        intervention_strength=float(
+                            attack_result.intervention_strength
+                        ),
                     )
                 )
             for baseline_predictor in standard_predictors:
@@ -841,10 +934,18 @@ def run_minimax_experiment(config: MinimaxConfig) -> tuple[pd.DataFrame, pd.Data
                         bound=float(bound),
                         cost=float(cost or 0.0),
                         clean_test_mse=float(baseline_predictor.clean_test_mse),
-                        attacked_test_mse=float(baseline_attack_result.attacked_test_mse),
-                        attack_objective_value=float(baseline_attack_result.best_objective_value),
-                        regularized_attack_value=float(baseline_attack_result.best_regularized_value),
-                        intervention_strength=float(baseline_attack_result.intervention_strength),
+                        attacked_test_mse=float(
+                            baseline_attack_result.attacked_test_mse
+                        ),
+                        attack_objective_value=float(
+                            baseline_attack_result.best_objective_value
+                        ),
+                        regularized_attack_value=float(
+                            baseline_attack_result.best_regularized_value
+                        ),
+                        intervention_strength=float(
+                            baseline_attack_result.intervention_strength
+                        ),
                     )
                 )
             progress.update(1)
@@ -856,7 +957,9 @@ def run_minimax_experiment(config: MinimaxConfig) -> tuple[pd.DataFrame, pd.Data
     results.to_csv(output_dir / "minimax_results_per_run.csv", index=False)
     summary.to_csv(output_dir / "minimax_results_summary.csv", index=False)
     save_minimax_plot(results, output_dir, config.attack_mode)
-    pd.DataFrame([asdict(config)]).to_json(output_dir / "minimax_config.json", orient="records", indent=2)
+    pd.DataFrame([asdict(config)]).to_json(
+        output_dir / "minimax_config.json", orient="records", indent=2
+    )
     return results, summary
 
 

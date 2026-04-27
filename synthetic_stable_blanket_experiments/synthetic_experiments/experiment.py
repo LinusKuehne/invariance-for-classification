@@ -153,7 +153,9 @@ def _train_all_predictors(
     return predictors
 
 
-def run_single_run(config: ExperimentConfig, run_id: int, progress: tqdm | None = None) -> list[ResultRow]:
+def run_single_run(
+    config: ExperimentConfig, run_id: int, progress: tqdm | None = None
+) -> list[ResultRow]:
     configure_torch(config.torch_num_threads)
     if config.lineargaussian:
         scm = LinearGaussianStableBlanketSCM(
@@ -173,7 +175,11 @@ def run_single_run(config: ExperimentConfig, run_id: int, progress: tqdm | None 
     for predictor in predictors:
         for objective in config.objectives:
             for sweep_value in sweep_values:
-                bound = float(sweep_value if sweep_name == "bound" else config.max_perturbation_bound)
+                bound = float(
+                    sweep_value
+                    if sweep_name == "bound"
+                    else config.max_perturbation_bound
+                )
                 cost = float(sweep_value) if sweep_name == "cost" else None
                 attack_result = optimize_attack(
                     scm=scm,
@@ -202,9 +208,15 @@ def run_single_run(config: ExperimentConfig, run_id: int, progress: tqdm | None 
                         cost=float(cost or 0.0),
                         clean_test_mse=float(predictor.clean_test_mse),
                         attacked_test_mse=float(attack_result.attacked_test_mse),
-                        attack_objective_value=float(attack_result.best_objective_value),
-                        regularized_attack_value=float(attack_result.best_regularized_value),
-                        intervention_strength=float(attack_result.intervention_strength),
+                        attack_objective_value=float(
+                            attack_result.best_objective_value
+                        ),
+                        regularized_attack_value=float(
+                            attack_result.best_regularized_value
+                        ),
+                        intervention_strength=float(
+                            attack_result.intervention_strength
+                        ),
                     )
                 )
                 if progress is not None:
@@ -275,5 +287,7 @@ def run_experiment_suite(config: ExperimentConfig) -> tuple[pd.DataFrame, pd.Dat
     results.to_csv(output_dir / "results_per_run.csv", index=False)
     summary.to_csv(output_dir / "results_summary.csv", index=False)
     save_plots(results, output_dir, attack_mode=config.attack_mode)
-    pd.DataFrame([asdict(config)]).to_json(output_dir / "config.json", orient="records", indent=2)
+    pd.DataFrame([asdict(config)]).to_json(
+        output_dir / "config.json", orient="records", indent=2
+    )
     return results, summary

@@ -96,8 +96,10 @@ def optimize_attack(
         eval_gen = torch.Generator(device=scm.device)
         eval_gen.manual_seed(seed + 5000 + restart)
         with torch.no_grad():
-            x_eval, y_eval, delta_x1_eval, delta_x4_eval = scm.sample_with_intervention_info(
-                eval_size, attack=attack, generator=eval_gen
+            x_eval, y_eval, delta_x1_eval, delta_x4_eval = (
+                scm.sample_with_intervention_info(
+                    eval_size, attack=attack, generator=eval_gen
+                )
             )
             pred_eval = predictor.model(predictor.select_and_standardize(x_eval))
             value_eval = _objective(y_eval, pred_eval, objective).item()
@@ -105,7 +107,11 @@ def optimize_attack(
 
         regularized_value_eval = value_eval
         if cost is not None:
-            regularized_value_eval = value_eval - cost * strength_eval if objective == "mse" else value_eval + cost * strength_eval
+            regularized_value_eval = (
+                value_eval - cost * strength_eval
+                if objective == "mse"
+                else value_eval + cost * strength_eval
+            )
 
         better = best_value is None
         if objective == "signed_error" and best_regularized_value is not None:
@@ -124,15 +130,25 @@ def optimize_attack(
             ).to(scm.device)
             best_attack.load_state_dict(attack.state_dict())
 
-    assert best_attack is not None and best_value is not None and best_regularized_value is not None
+    assert (
+        best_attack is not None
+        and best_value is not None
+        and best_regularized_value is not None
+    )
     test_gen = torch.Generator(device=scm.device)
     test_gen.manual_seed(seed + 99999)
     with torch.no_grad():
-        x_test_adv, y_test_adv, delta_x1_test, delta_x4_test = scm.sample_with_intervention_info(
-            eval_size, attack=best_attack, generator=test_gen
+        x_test_adv, y_test_adv, delta_x1_test, delta_x4_test = (
+            scm.sample_with_intervention_info(
+                eval_size, attack=best_attack, generator=test_gen
+            )
         )
-        attacked_test_mse = torch.mean((y_test_adv - predictor.predict(x_test_adv)) ** 2).item()
-        intervention_strength = _intervention_strength(delta_x1_test, delta_x4_test).item()
+        attacked_test_mse = torch.mean(
+            (y_test_adv - predictor.predict(x_test_adv)) ** 2
+        ).item()
+        intervention_strength = _intervention_strength(
+            delta_x1_test, delta_x4_test
+        ).item()
 
     return AttackResult(
         objective_name=objective,

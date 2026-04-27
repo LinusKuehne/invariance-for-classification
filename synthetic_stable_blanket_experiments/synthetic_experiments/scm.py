@@ -58,7 +58,9 @@ class AttackMechanisms(nn.Module):
             self.x1_net = ConstantAttack(bound) if intervene_on_x1 else None
             self.x4_net = ConstantAttack(bound)
         else:
-            self.x1_net = AttackNetwork(2, hidden_dim, bound) if intervene_on_x1 else None
+            self.x1_net = (
+                AttackNetwork(2, hidden_dim, bound) if intervene_on_x1 else None
+            )
             self.x4_net = AttackNetwork(3, hidden_dim, bound)
 
     def perturb_x1(self, x2: Tensor, noise: Tensor) -> Tensor:
@@ -77,7 +79,12 @@ class AttackMechanisms(nn.Module):
 class NonlinearStableBlanketSCM:
     """Nonlinear SCM with stable blanket {X1, X2, X3} and direct intervention on X1 and X4."""
 
-    def __init__(self, device: str = "cpu", intervene_on_x1: bool = True, include_x6: bool = False) -> None:
+    def __init__(
+        self,
+        device: str = "cpu",
+        intervene_on_x1: bool = True,
+        include_x6: bool = False,
+    ) -> None:
         self.device = torch.device(device)
         self.intervene_on_x1 = intervene_on_x1
         self.include_x6 = include_x6
@@ -182,7 +189,12 @@ class NonlinearStableBlanketSCM:
 class LinearGaussianStableBlanketSCM:
     """Linear-Gaussian SCM with exact oracle conditional expectations."""
 
-    def __init__(self, device: str = "cpu", intervene_on_x1: bool = True, include_x6: bool = False) -> None:
+    def __init__(
+        self,
+        device: str = "cpu",
+        intervene_on_x1: bool = True,
+        include_x6: bool = False,
+    ) -> None:
         self.device = torch.device(device)
         self.intervene_on_x1 = intervene_on_x1
         self.include_x6 = include_x6
@@ -220,7 +232,9 @@ class LinearGaussianStableBlanketSCM:
         attack: Optional[AttackMechanisms] = None,
         generator: Optional[torch.Generator] = None,
     ) -> tuple[Tensor, Tensor]:
-        x, y, _, _ = self.sample_with_intervention_info(n, attack=attack, generator=generator)
+        x, y, _, _ = self.sample_with_intervention_info(
+            n, attack=attack, generator=generator
+        )
         return x, y
 
     def sample_with_intervention_info(
@@ -264,7 +278,9 @@ class LinearGaussianStableBlanketSCM:
         x = torch.cat(pieces, dim=1)
         return x, y, delta_x1, delta_x4
 
-    def conditional_mean_params(self, subset_indices: tuple[int, ...]) -> tuple[Tensor, Tensor, Tensor]:
+    def conditional_mean_params(
+        self, subset_indices: tuple[int, ...]
+    ) -> tuple[Tensor, Tensor, Tensor]:
         cov_xx, cov_xy = self._joint_covariances()
         subset = torch.tensor(subset_indices, dtype=torch.long, device=self.device)
         cov_subset = cov_xx.index_select(0, subset).index_select(1, subset)
@@ -314,7 +330,11 @@ class LinearGaussianStableBlanketSCM:
         observed_names = ["x1", "x2", "x3", "x4", "x5"]
         if self.include_x6:
             observed_names.append("x6")
-        observed_idx = torch.tensor([name_to_idx[name] for name in observed_names], dtype=torch.long, device=self.device)
+        observed_idx = torch.tensor(
+            [name_to_idx[name] for name in observed_names],
+            dtype=torch.long,
+            device=self.device,
+        )
         cov_xx = covariance.index_select(0, observed_idx).index_select(1, observed_idx)
         cov_xy = covariance.index_select(0, observed_idx).index_select(
             1, torch.tensor([name_to_idx["y"]], dtype=torch.long, device=self.device)

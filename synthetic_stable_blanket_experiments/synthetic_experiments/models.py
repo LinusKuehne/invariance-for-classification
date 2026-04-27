@@ -91,10 +91,17 @@ def train_predictor(
     x_val_std = (x_val - x_mean) / x_std
     x_test_std = (x_test - x_mean) / x_std
 
-    model = MLPRegressor(len(subset_indices), hidden_dim=hidden_dim, depth=depth).to(x_train.device)
+    model = MLPRegressor(len(subset_indices), hidden_dim=hidden_dim, depth=depth).to(
+        x_train.device
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.MSELoss()
-    loader = DataLoader(TensorDataset(x_train_std, y_train), batch_size=batch_size, shuffle=True, num_workers=0)
+    loader = DataLoader(
+        TensorDataset(x_train_std, y_train),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+    )
 
     best_state = None
     best_val = float("inf")
@@ -149,7 +156,9 @@ def build_oracle_predictor(
     y_test: Tensor,
 ) -> PredictorBundle:
     subset_indices = tuple(int(i) for i in subset_indices)
-    model = FixedLinearRegressor(weight=standardized_weight.to(x_test_full.device)).to(x_test_full.device)
+    model = FixedLinearRegressor(weight=standardized_weight.to(x_test_full.device)).to(
+        x_test_full.device
+    )
     model.eval()
     for parameter in model.parameters():
         parameter.requires_grad_(False)

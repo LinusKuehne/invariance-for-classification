@@ -5,7 +5,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-
 METHOD_ORDER = ["parents", "stable_blanket", "all_variables"]
 LABELS = {
     "signed_error": r"Adversary minimizes $\mathbb{E}[Y-f_S(X_S)]$",
@@ -23,7 +22,8 @@ def save_plots(results: pd.DataFrame, output_dir: str | Path, attack_mode: str) 
     for objective, group in results.groupby("objective"):
         stats = (
             group.groupby(["method", x_col])["attacked_test_mse"]
-            .agg(["mean", "std", "count"]).reset_index()
+            .agg(["mean", "std", "count"])
+            .reset_index()
         )
         stats["std"] = stats["std"].fillna(0.0)
         stats["sem"] = stats["std"] / stats["count"].clip(lower=1) ** 0.5
