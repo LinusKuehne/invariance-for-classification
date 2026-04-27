@@ -16,7 +16,6 @@ Results are saved incrementally.
 ================================================================================
 SC CONFIGURATIONS (invariance test, test classifier type)
 ================================================================================
-  - CRT (RF)
   - DeLong (RF), DeLong (LR)
   - InvEnvPred (RF)
   - Residual (RF), Residual (LR)
@@ -103,7 +102,7 @@ NORMAL_COLS: dict[str, list[str]] = {
 
 # SC invariance test configurations:
 # (display_name, invariance_test, test_classifier_type or None)
-# Limited to those appearing in the paper tables (CRT omitted).
+# Limited to those appearing in the paper tables.
 SC_CONFIGS: list[tuple[str, str, str | None]] = [
     ("DeLong(RF)", "delong", "RF"),
     ("DeLong(LR)", "delong", "LR"),

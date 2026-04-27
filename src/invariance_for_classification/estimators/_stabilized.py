@@ -243,7 +243,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         - "wgcm_fix": WGCMTest with method="fix"
         - "delong": DeLongTest
         - "inv_env_pred": InvariantEnvironmentPredictionTest
-        - "crt": ConditionalRandomizationTest
 
     pred_scoring : str, default="mean"
         Strategy for computing the predictiveness score of invariant subsets.
@@ -686,12 +685,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             from ..invariance_tests import InvariantEnvironmentPredictionTest
 
             return InvariantEnvironmentPredictionTest(
-                test_classifier_type=self.test_classifier_type
-            )
-        elif self.invariance_test == "crt":
-            from ..invariance_tests import ConditionalRandomizationTest
-
-            return ConditionalRandomizationTest(
                 test_classifier_type=self.test_classifier_type
             )
         else:

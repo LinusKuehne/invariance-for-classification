@@ -19,7 +19,7 @@ from invariance_for_classification.invariance_tests import InvarianceTest
 
 # --- Configuration ---
 # Set to a list of test names to limit which tests run.
-# Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "inv_env_pred", "crt"
+# Available names: "inv_residual", "delong", "tram_gcm", "wgcm", "inv_env_pred"
 # Empty list means all tests will run.
 ENABLED_TESTS: list[str] = ["inv_residual"]
 
@@ -241,7 +241,6 @@ class TestFindsInvariantSubsets:
             "WGCMTest": "wgcm",
             "DeLongTest": "delong",
             "InvariantEnvironmentPredictionTest": "inv_env_pred",
-            "ConditionalRandomizationTest": "crt",
         }
         inv_test_str = inv_test_name_map.get(inv_test_cls.__name__)
         if inv_test_str is None:
