@@ -167,18 +167,18 @@ def compute_summary(df: pd.DataFrame, summary_path: str) -> pd.DataFrame:
 
 # Mapping from test display names to LaTeX labels
 TABLE_LINEAR: list[tuple[str, str]] = [
-    ("Residual (LR)", r"\quad IRD(LR)"),
-    ("TramGCM (LR)", r"\quad \textsc{tram}-GCM(LR)"),
-    ("DeLong (LR)", r"\quad ITP(LR)"),
+    ("Residual (LR)", r"\quad IRD-LR"),
+    ("TramGCM (LR)", r"\quad \textsc{tram}-GCM-LR"),
+    ("DeLong (LR)", r"\quad ITP-LR"),
 ]
 
 TABLE_NONLINEAR: list[tuple[str, str]] = [
-    ("Residual (RF)", r"\quad IRD(RF)"),
-    ("TramGCM (RF)", r"\quad \textsc{tram}-GCM(RF)"),
-    ("DeLong (RF)", r"\quad ITP(RF)"),
-    ("InvEnvPred (RF)", r"\quad IEP(RF)"),
-    # ("WGCM_est", r"\quad WGCM\textsubscript{est}"),
-    # ("WGCM_fix", r"\quad WGCM\textsubscript{fix}"),
+    ("Residual (RF)", r"\quad IRD-RF"),
+    ("TramGCM (RF)", r"\quad \textsc{tram}-GCM-RF"),
+    ("DeLong (RF)", r"\quad ITP-RF"),
+    ("InvEnvPred (RF)", r"\quad IEP-RF"),
+    ("WGCM_est", r"\quad WGCM\textsubscript{est}-RF"),
+    ("WGCM_fix", r"\quad WGCM\textsubscript{fix}-RF"),
 ]
 
 
@@ -268,9 +268,9 @@ def build_auc_table(
     a(r"\begin{tabular}{@{}lccc@{}}")
     a(r"    \toprule")
     a(r"    Method")
-    a(r"      & {Dataset D-lin}")
-    a(r"      & {Dataset D-nonlin}")
-    a(r"      & {Dataset D-spur} \\")
+    a(r"      & {D-lin}")
+    a(r"      & {D-nonlin}")
+    a(r"      & {D-spur} \\")
     a(r"    \midrule")
     a(r"    %")
 

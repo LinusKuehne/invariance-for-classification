@@ -2,13 +2,18 @@
 Generate LaTeX tables from OOD evaluation results.
 
 Reads the raw per-rep CSV files produced by evaluate_OOD_predictions.py
-for datasets d_lin, d_nonlin, and d_spur, and outputs two LaTeX tables:
+for datasets d_lin, d_nonlin, and d_spur, and outputs five LaTeX tables:
 
-  1. tab:main-results          - worst-case accuracy for all methods (ensemble)
-  2. tab:appendix-ensemble-vs-best - ensemble vs. best-subset for SC methods
+  1. tab:main-results          - worst-case accuracy, D-nonlin + D-spur (main body)
+  2. tab:main-results-full     - worst-case accuracy, all three datasets (appendix)
+  3. tab:main-results-BCE      - worst-case BCE loss, D-nonlin + D-spur (appendix)
+  4. tab:main-results-BCE-full - worst-case BCE loss, all three datasets (appendix)
+  5. tab:appendix-ensemble-vs-best - SC vs. IMP for each invariance test
 
-The metric is: minimum accuracy over test environments per rep, then
-mean ± half-width of a 95% t-CI across reps.
+Tables 1/1b show only the tram-GCM test for SC and IMP.  Table 2 shows all
+tests side-by-side.  The metric for tables 1/1b is: minimum accuracy (or
+maximum BCE loss) over test environments per rep, then mean ± half-width of a
+95% t-CI across reps.
 
 ================================================================================
 USAGE
@@ -36,90 +41,92 @@ from scipy import stats
 
 DATASETS = ["d_lin", "d_nonlin", "d_spur"]
 
-# Mapping: (csv_method_name) → LaTeX display name
-# For SC methods the csv name is like "SC Residual(RF), pred=RF"
-# or "SC Residual(RF), pred=RF, best".
+DS_LABELS: dict[str, str] = {
+    "d_lin": "D-lin",
+    "d_nonlin": "D-nonlin",
+    "d_spur": "D-spur",
+}
 
-# Table 1: main results (ensemble only, test_clf == pred_clf)
-# Ordered exactly as in the LaTeX template.
+# Table 1: main results — only tram-GCM for SC and IMP, ordered as in the LaTeX.
+# Each entry: (csv_method_name, LaTeX display name)
 TABLE1_LINEAR: list[tuple[str, str]] = [
-    ("SC Residual(LR), pred=LR", r"\quad SC-IRD(LR)"),
-    ("SC TramGCM(LR), pred=LR", r"\quad SC-\textsc{tram}-GCM(LR)"),
-    ("SC DeLong(LR), pred=LR", r"\quad SC-ITP(LR)"),
+    ("SC TramGCM(LR), pred=LR", r"\quad SC-LR"),
+    ("SC TramGCM(LR), pred=LR, best", r"\quad IMP-LR"),
+    ("ERM LR", r"\quad ERM-LR"),
+    ("IRM-Linear", r"\quad IRM-Linear"),
+    ("Oracle LR", r"\quad SB-Oracle-LR"),
 ]
 
 TABLE1_NONLINEAR: list[tuple[str, str]] = [
-    ("SC Residual(RF), pred=RF", r"\quad SC-IRD(RF)"),
-    ("SC TramGCM(RF), pred=RF", r"\quad SC-\textsc{tram}-GCM(RF)"),
-    ("SC DeLong(RF), pred=RF", r"\quad SC-ITP(RF)"),
-    ("SC InvEnvPred(RF), pred=RF", r"\quad SC-IEP(RF)"),
-    ("SC WGCM_est, pred=RF", r"\quad SC-WGCM\textsubscript{est}"),
-    ("SC WGCM_fix, pred=RF", r"\quad SC-WGCM\textsubscript{fix}"),
-]
-
-TABLE1_BASELINES: list[tuple[str, str]] = [
-    ("ERM LR", r"\quad ERM-LR"),
+    ("SC TramGCM(RF), pred=RF", r"\quad SC-RF"),
+    ("SC TramGCM(RF), pred=RF, best", r"\quad IMP-RF"),
     ("ERM RF", r"\quad ERM-RF"),
-    ("IRM-Linear", r"\quad IRM-Linear"),
     ("IRM-NN", r"\quad IRM-NN"),
+    ("Oracle RF", r"\quad SB-Oracle-RF"),
 ]
 
-TABLE1_ORACLE: list[tuple[str, str]] = [
-    ("Oracle LR", r"\quad Oracle-LR"),
-    ("Oracle RF", r"\quad Oracle-RF"),
-]
+# Oracle rows are excluded from the "best non-oracle" bold highlighting.
+TABLE1_ORACLE_CSV: set[str] = {"Oracle LR", "Oracle RF"}
 
-# Table 2: ensemble vs best (test_clf == pred_clf)
-# Each entry produces two rows (ensemble + best).
-TABLE2_LINEAR: list[tuple[str, str, str]] = [
-    # (csv_ensemble, csv_best, latex_name)
+# Table 2: SC vs. IMP for every invariance test.
+# Each entry: (csv_ensemble, csv_best, sc_latex_name, imp_latex_name)
+TABLE2_LINEAR: list[tuple[str, str, str, str]] = [
     (
         "SC Residual(LR), pred=LR",
         "SC Residual(LR), pred=LR, best",
-        r"\quad \multirow{2}{*}{SC-IRD(LR)}",
+        r"\quad SC-IRD-LR",
+        r"\quad IMP-IRD-LR",
     ),
     (
         "SC TramGCM(LR), pred=LR",
         "SC TramGCM(LR), pred=LR, best",
-        r"\quad \multirow{2}{*}{SC-\textsc{tram}-GCM(LR)}",
+        r"\quad SC-\textsc{tram}-GCM-LR",
+        r"\quad IMP-\textsc{tram}-GCM-LR",
     ),
     (
         "SC DeLong(LR), pred=LR",
         "SC DeLong(LR), pred=LR, best",
-        r"\quad \multirow{2}{*}{SC-ITP(LR)}",
+        r"\quad SC-ITP-LR",
+        r"\quad IMP-ITP-LR",
     ),
 ]
 
-TABLE2_NONLINEAR: list[tuple[str, str, str]] = [
+TABLE2_NONLINEAR: list[tuple[str, str, str, str]] = [
     (
         "SC Residual(RF), pred=RF",
         "SC Residual(RF), pred=RF, best",
-        r"\quad \multirow{2}{*}{SC-IRD(RF)}",
+        r"\quad SC-IRD-RF",
+        r"\quad IMP-IRD-RF",
     ),
     (
         "SC TramGCM(RF), pred=RF",
         "SC TramGCM(RF), pred=RF, best",
-        r"\quad \multirow{2}{*}{SC-\textsc{tram}-GCM(RF)}",
+        r"\quad SC-\textsc{tram}-GCM-RF",
+        r"\quad IMP-\textsc{tram}-GCM-RF",
     ),
     (
         "SC DeLong(RF), pred=RF",
         "SC DeLong(RF), pred=RF, best",
-        r"\quad \multirow{2}{*}{SC-ITP(RF)}",
+        r"\quad SC-ITP-RF",
+        r"\quad IMP-ITP-RF",
     ),
     (
         "SC InvEnvPred(RF), pred=RF",
         "SC InvEnvPred(RF), pred=RF, best",
-        r"\quad \multirow{2}{*}{SC-IEP(RF)}",
+        r"\quad SC-IEP-RF",
+        r"\quad IMP-IEP-RF",
     ),
     (
         "SC WGCM_est, pred=RF",
         "SC WGCM_est, pred=RF, best",
-        r"\quad \multirow{2}{*}{SC-WGCM\textsubscript{est}}",
+        r"\quad SC-WGCM\textsubscript{est}-RF",
+        r"\quad IMP-WGCM\textsubscript{est}-RF",
     ),
     (
         "SC WGCM_fix, pred=RF",
         "SC WGCM_fix, pred=RF, best",
-        r"\quad \multirow{2}{*}{SC-WGCM\textsubscript{fix}}",
+        r"\quad SC-WGCM\textsubscript{fix}-RF",
+        r"\quad IMP-WGCM\textsubscript{fix}-RF",
     ),
 ]
 
@@ -274,67 +281,76 @@ def build_table1(
     data: dict[str, dict[str, np.ndarray]],
     decimals: int,
     n_obs: int,
+    datasets: list[str] | None = None,
     lower_is_better: bool = False,
 ) -> str:
-    """Build Table 1: main results."""
-    # Determine best per column (excluding oracle)
+    """Build Table 1 (or 1b): main results.
+
+    Parameters
+    ----------
+    datasets:
+        Which dataset columns to include.  Defaults to all three.
+        Pass ``["d_nonlin", "d_spur"]`` for the main-body two-column version.
+    """
+    if datasets is None:
+        datasets = DATASETS
+
+    ncols = 1 + len(datasets)
+    col_spec = "l" + "c" * len(datasets)
+
+    # Find best non-oracle method per dataset.
     all_non_oracle = [
-        csv for csv, _ in TABLE1_LINEAR + TABLE1_NONLINEAR + TABLE1_BASELINES
+        csv
+        for csv, _ in TABLE1_LINEAR + TABLE1_NONLINEAR
+        if csv not in TABLE1_ORACLE_CSV
     ]
     best = _find_best_methods(data, all_non_oracle, lower_is_better=lower_is_better)
 
-    def _row(csv_name: str, latex_name: str) -> list[str]:
+    def _row(csv_name: str, latex_name: str, is_oracle: bool = False) -> list[str]:
         cells = " & ".join(
-            _cell(data, ds, csv_name, decimals, bold=(csv_name in best.get(ds, set())))
-            for ds in DATASETS
+            _cell(
+                data,
+                ds,
+                csv_name,
+                decimals,
+                bold=(not is_oracle and csv_name in best.get(ds, set())),
+            )
+            for ds in datasets
         )
         return [f"    {latex_name}", f"      & {cells} \\\\"]
 
     lines: list[str] = []
     a = lines.append
 
-    a(r"\begin{tabular}{@{}lccc@{}}")
+    a(r"\begin{tabular}{@{}" + col_spec + r"@{}}")
     a(r"    \toprule")
     a(r"    Method")
-    a(r"      & {Dataset D-lin}")
-    a(r"      & {Dataset D-nonlin}")
-    a(r"      & {Dataset D-spur} \\")
+    for i, ds in enumerate(datasets):
+        suffix = r" \\" if i == len(datasets) - 1 else ""
+        a(f"      & {{{DS_LABELS[ds]}}}{suffix}")
     a(r"    \midrule")
-    a(r"    %")
 
-    # --- SC linear ---
-    a(r"    % --- Stabilized classification (linear) --------------------------------")
-    a(r"    \multicolumn{4}{@{}l}{\textbf{SC (linear)}} \\[2pt]")
+    # --- Linear methods ---
+    a(
+        f"    \\multicolumn{{{ncols}}}{{@{{}}l}}"
+        r"{\textbf{Linear methods}} \\[2pt]"
+    )
     for csv_name, latex_name in TABLE1_LINEAR:
-        lines.extend(_row(csv_name, latex_name))
-    a(r"    %")
+        lines.extend(
+            _row(csv_name, latex_name, is_oracle=csv_name in TABLE1_ORACLE_CSV)
+        )
 
-    # --- SC nonlinear ---
     a(r"    \midrule")
-    a(r"    % --- Stabilized classification (nonlinear) -----------------------------")
-    a(r"    \multicolumn{4}{@{}l}{\textbf{SC (nonlinear)}} \\[2pt]")
+
+    # --- Nonlinear methods ---
+    a(
+        f"    \\multicolumn{{{ncols}}}{{@{{}}l}}"
+        r"{\textbf{Nonlinear methods}} \\[2pt]"
+    )
     for csv_name, latex_name in TABLE1_NONLINEAR:
-        lines.extend(_row(csv_name, latex_name))
-
-    a(r"    %")
-
-    # --- Baselines ---
-    a(r"    \midrule")
-    a(r"    % --- Baselines ---------------------------------------------------------")
-    a(r"    \multicolumn{4}{@{}l}{\textbf{Baselines}} \\[2pt]")
-    for csv_name, latex_name in TABLE1_BASELINES:
-        lines.extend(_row(csv_name, latex_name))
-
-    a(r"    %")
-
-    # --- Oracle ---
-    a(r"    \midrule")
-    a(r"    % --- Oracle ------------------------------------------------------------")
-    a(r"    \multicolumn{4}{@{}l}{\textbf{Oracle (stable blanket)}} \\[2pt]")
-    for csv_name, latex_name in TABLE1_ORACLE:
-        cells = " & ".join(_cell(data, ds, csv_name, decimals) for ds in DATASETS)
-        a(f"    {latex_name}")
-        a(f"      & {cells} \\\\")
+        lines.extend(
+            _row(csv_name, latex_name, is_oracle=csv_name in TABLE1_ORACLE_CSV)
+        )
 
     a(r"  \bottomrule")
     a(r"\end{tabular}")
@@ -347,14 +363,14 @@ def _table2_row_pair(
     subset_data: dict[str, dict[str, tuple[float, float]]],
     csv_ensemble: str,
     csv_best: str,
-    latex_name: str,
+    sc_latex_name: str,
+    imp_latex_name: str,
     decimals: int,
-    spacing: str = r"\\[3pt]",
+    datasets: list[str],
 ) -> list[str]:
-    """Build the two-row block for one SC method in Table 2."""
+    """Build the SC + IMP row pair for one invariance test in Table 2."""
 
     def _ens_cell(ds: str) -> str:
-        """Ensemble cell: accuracy ± CI with subset counts appended."""
         cell = _cell(data, ds, csv_ensemble, decimals)
         counts = subset_data.get(ds, {}).get(csv_ensemble)
         if counts is not None and cell != "---":
@@ -362,14 +378,13 @@ def _table2_row_pair(
             cell += f" ({n_inv:.0f}/{n_pred:.0f})"
         return cell
 
-    ens_cells = " & ".join(_ens_cell(ds) for ds in DATASETS)
-    best_cells = " & ".join(_cell(data, ds, csv_best, decimals) for ds in DATASETS)
+    ens_cells = " & ".join(_ens_cell(ds) for ds in datasets)
+    best_cells = " & ".join(_cell(data, ds, csv_best, decimals) for ds in datasets)
     return [
-        f"    {latex_name}",
-        "      & ensemble",
-        f"        & {ens_cells} \\\\",
-        "      & best subset",
-        f"        & {best_cells} {spacing}",
+        f"    {sc_latex_name}",
+        f"      & {ens_cells} \\\\",
+        f"    {imp_latex_name}",
+        f"      & {best_cells} \\\\",
     ]
 
 
@@ -378,42 +393,63 @@ def build_table2(
     subset_data: dict[str, dict[str, tuple[float, float]]],
     decimals: int,
     n_obs: int,
+    datasets: list[str] | None = None,
 ) -> str:
-    """Build Table 2: ensemble vs best subset."""
+    """Build Table 2: SC vs. IMP (ensemble vs. best subset) for all invariance tests."""
+    if datasets is None:
+        datasets = DATASETS
+
+    ncols = 1 + len(datasets)
+    col_spec = "l" * (1 + len(datasets))
+
     lines: list[str] = []
     a = lines.append
 
-    a(r"\begin{tabular}{@{}lllll@{}}")
+    a(r"\begin{tabular}{@{}" + col_spec + r"@{}}")
     a(r"    \toprule")
-    a(r"    Method & Aggregation")
-    a(r"      & {Dataset D-lin}")
-    a(r"      & {Dataset D-nonlin}")
-    a(r"      & {Dataset D-spur} \\")
+    a(r"    Method")
+    for i, ds in enumerate(datasets):
+        suffix = r" \\" if i == len(datasets) - 1 else ""
+        a(f"      & {{{DS_LABELS[ds]}}}{suffix}")
     a(r"    \midrule")
-    a(r"    %")
 
-    # --- SC linear ---
-    a(r"    % --- Stabilized classification (linear) --------------------------------")
-    a(r"    \multicolumn{5}{@{}l}{\textbf{SC (linear)}} \\[2pt]")
-    for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_LINEAR):
-        sp = r"\\[4pt]" if i == len(TABLE2_LINEAR) - 1 else r"\\[3pt]"
+    # --- Linear methods ---
+    a(
+        f"    \\multicolumn{{{ncols}}}{{@{{}}l}}"
+        r"{\textbf{Linear methods}} \\[2pt]"
+    )
+    for csv_ens, csv_best, sc_name, imp_name in TABLE2_LINEAR:
         lines.extend(
             _table2_row_pair(
-                data, subset_data, csv_ens, csv_best, latex_name, decimals, sp
+                data,
+                subset_data,
+                csv_ens,
+                csv_best,
+                sc_name,
+                imp_name,
+                decimals,
+                datasets,
             )
         )
 
-    a(r"    %")
-
-    # --- SC nonlinear ---
-    a(r"    % --- Stabilized classification (nonlinear) -----------------------------")
     a(r"    \midrule")
-    a(r"    \multicolumn{5}{@{}l}{\textbf{SC (nonlinear)}} \\[2pt]")
-    for i, (csv_ens, csv_best, latex_name) in enumerate(TABLE2_NONLINEAR):
-        sp = r"\\" if i == len(TABLE2_NONLINEAR) - 1 else r"\\[3pt]"
+
+    # --- Nonlinear methods ---
+    a(
+        f"    \\multicolumn{{{ncols}}}{{@{{}}l}}"
+        r"{\textbf{Nonlinear methods}} \\[2pt]"
+    )
+    for csv_ens, csv_best, sc_name, imp_name in TABLE2_NONLINEAR:
         lines.extend(
             _table2_row_pair(
-                data, subset_data, csv_ens, csv_best, latex_name, decimals, sp
+                data,
+                subset_data,
+                csv_ens,
+                csv_best,
+                sc_name,
+                imp_name,
+                decimals,
+                datasets,
             )
         )
 
@@ -556,8 +592,8 @@ def build_spider_charts(
 # Methods to include in the per-environment table, in column order.
 # Tuple: (csv_name, short LaTeX label)
 ENV_TABLE_METHODS: list[tuple[str, str]] = [
-    ("SC TramGCM(LR), pred=LR", r"SC-\textsc{tram}-GCM(LR)"),
-    ("SC TramGCM(RF), pred=RF", r"SC-\textsc{tram}-GCM(RF)"),
+    ("SC TramGCM(LR), pred=LR", r"SC-\textsc{tram}-GCM-LR"),
+    ("SC TramGCM(RF), pred=RF", r"SC-\textsc{tram}-GCM-RF"),
     ("ERM LR", r"ERM-LR"),
     ("ERM RF", r"ERM-RF"),
     ("IRM-Linear", r"IRM-Linear"),
@@ -609,25 +645,67 @@ def main(
         subset_data[ds] = _load_subset_counts(results_dir, ds, n_obs)
         env_data[ds] = _load_env_acc(results_dir, ds, n_obs)
 
-    table1_acc = build_table1(data_acc, decimals, n_obs, lower_is_better=False)
-    table1_bce = build_table1(data_bce, decimals, n_obs, lower_is_better=True)
+    # Two-column versions (D-nonlin + D-spur) — main body tables
+    table1_acc_main = build_table1(
+        data_acc,
+        decimals,
+        n_obs,
+        datasets=["d_nonlin", "d_spur"],
+        lower_is_better=False,
+    )
+    table1_bce_main = build_table1(
+        data_bce,
+        decimals,
+        n_obs,
+        datasets=["d_nonlin", "d_spur"],
+        lower_is_better=True,
+    )
+
+    # Three-column versions (D-lin + D-nonlin + D-spur) — appendix tables
+    table1_acc_full = build_table1(
+        data_acc,
+        decimals,
+        n_obs,
+        datasets=DATASETS,
+        lower_is_better=False,
+    )
+    table1_bce_full = build_table1(
+        data_bce,
+        decimals,
+        n_obs,
+        datasets=DATASETS,
+        lower_is_better=True,
+    )
+
     table2 = build_table2(data_acc, subset_data, decimals, n_obs)
 
     full = (
         "% =============================================================================\n"
-        "% Table 1: Main results (Worst-Case Accuracy)\n"
+        "% Table 1: Main results (Worst-Case Accuracy) — Main (D-nonlin, D-spur)\n"
         "% =============================================================================\n"
         "\n"
-        f"{table1_acc}\n"
+        f"{table1_acc_main}\n"
         "\n\n"
         "% =============================================================================\n"
-        "% Table 1b: Main results (Worst-Case BCE Loss)\n"
+        "% Table 1: Main results (Worst-Case Accuracy) — Full (D-lin, D-nonlin, D-spur)\n"
         "% =============================================================================\n"
         "\n"
-        f"{table1_bce}\n"
+        f"{table1_acc_full}\n"
         "\n\n"
         "% =============================================================================\n"
-        "% Table 2: Ensemble vs. best subset\n"
+        "% Table 1b: Main results (Worst-Case BCE Loss) — Main (D-nonlin, D-spur)\n"
+        "% =============================================================================\n"
+        "\n"
+        f"{table1_bce_main}\n"
+        "\n\n"
+        "% =============================================================================\n"
+        "% Table 1b: Main results (Worst-Case BCE Loss) — Full (D-lin, D-nonlin, D-spur)\n"
+        "% =============================================================================\n"
+        "\n"
+        f"{table1_bce_full}\n"
+        "\n\n"
+        "% =============================================================================\n"
+        "% Table 2: SC vs. IMP (ensemble vs. best subset)\n"
         "% =============================================================================\n"
         "\n"
         f"{table2}\n"
