@@ -46,14 +46,12 @@ TABLE1_LINEAR: list[tuple[str, str]] = [
     ("SC Residual(LR), pred=LR", r"\quad SC-IRD(LR)"),
     ("SC TramGCM(LR), pred=LR", r"\quad SC-\textsc{tram}-GCM(LR)"),
     ("SC DeLong(LR), pred=LR", r"\quad SC-ITP(LR)"),
-    ("SC LOEO(LR), pred=LR", r"\quad SC-LOEO(LR)"),
 ]
 
 TABLE1_NONLINEAR: list[tuple[str, str]] = [
     ("SC Residual(RF), pred=RF", r"\quad SC-IRD(RF)"),
     ("SC TramGCM(RF), pred=RF", r"\quad SC-\textsc{tram}-GCM(RF)"),
     ("SC DeLong(RF), pred=RF", r"\quad SC-ITP(RF)"),
-    ("SC LOEO(RF), pred=RF", r"\quad SC-LOEO(RF)"),
     ("SC InvEnvPred(RF), pred=RF", r"\quad SC-IEP(RF)"),
     ("SC WGCM_est, pred=RF", r"\quad SC-WGCM\textsubscript{est}"),
     ("SC WGCM_fix, pred=RF", r"\quad SC-WGCM\textsubscript{fix}"),
@@ -90,11 +88,6 @@ TABLE2_LINEAR: list[tuple[str, str, str]] = [
         "SC DeLong(LR), pred=LR, best",
         r"\quad \multirow{2}{*}{SC-ITP(LR)}",
     ),
-    (
-        "SC LOEO(LR), pred=LR",
-        "SC LOEO(LR), pred=LR, best",
-        r"\quad \multirow{2}{*}{SC-LOEO(LR)}",
-    ),
 ]
 
 TABLE2_NONLINEAR: list[tuple[str, str, str]] = [
@@ -112,11 +105,6 @@ TABLE2_NONLINEAR: list[tuple[str, str, str]] = [
         "SC DeLong(RF), pred=RF",
         "SC DeLong(RF), pred=RF, best",
         r"\quad \multirow{2}{*}{SC-ITP(RF)}",
-    ),
-    (
-        "SC LOEO(RF), pred=RF",
-        "SC LOEO(RF), pred=RF, best",
-        r"\quad \multirow{2}{*}{SC-LOEO(RF)}",
     ),
     (
         "SC InvEnvPred(RF), pred=RF",

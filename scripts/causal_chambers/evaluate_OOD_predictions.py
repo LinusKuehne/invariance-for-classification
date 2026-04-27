@@ -22,7 +22,6 @@ SC CONFIGURATIONS (invariance test, test classifier type)
   - Residual (RF), Residual (LR)
   - TramGCM (RF), TramGCM (LR)
   - WGCM_est (xgb), WGCM_fix (xgb)
-  - LOEO Regret (RF), LOEO Regret (LR)
 
 Each SC configuration produces predictions with both RF and LR base classifiers.
 
@@ -115,8 +114,6 @@ SC_CONFIGS: list[tuple[str, str, str | None]] = [
     ("TramGCM(LR)", "tram_gcm", "LR"),
     ("WGCM_est", "wgcm_est", None),
     ("WGCM_fix", "wgcm_fix", None),
-    ("LOEO(RF)", "loeo_regret", "RF"),
-    ("LOEO(LR)", "loeo_regret", "LR"),
 ]
 
 

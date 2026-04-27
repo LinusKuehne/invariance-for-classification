@@ -1,5 +1,5 @@
 """
-Evaluate pairwise AUC of invariance tests and LOEO rankings for separating
+Evaluate pairwise AUC of invariance tests for separating
 ground-truth invariant from non-invariant subsets, using pre-computed results.
 
 This script parses the p-values / scores saved by evaluate_OOD_predictions.py
@@ -116,7 +116,6 @@ def _pairwise_auc(inv_values: np.ndarray, noninv_values: np.ndarray) -> float:
     """
     Fraction of (inv, noninv) pairs where inv > noninv.
 
-    Higher p-value / higher LOEO score -> more invariant, so higher is better.
     Returns value in [0, 1]; 1.0 = perfect separation, 0.5 = random.
     """
     count = sum(
@@ -171,7 +170,6 @@ TABLE_LINEAR: list[tuple[str, str]] = [
     ("Residual (LR)", r"\quad IRD(LR)"),
     ("TramGCM (LR)", r"\quad \textsc{tram}-GCM(LR)"),
     ("DeLong (LR)", r"\quad ITP(LR)"),
-    ("LOEO (LR)", r"\quad LOEO(LR)"),
 ]
 
 TABLE_NONLINEAR: list[tuple[str, str]] = [
@@ -181,7 +179,6 @@ TABLE_NONLINEAR: list[tuple[str, str]] = [
     ("InvEnvPred (RF)", r"\quad IEP(RF)"),
     # ("WGCM_est", r"\quad WGCM\textsubscript{est}"),
     # ("WGCM_fix", r"\quad WGCM\textsubscript{fix}"),
-    ("LOEO (RF)", r"\quad LOEO(RF)"),
 ]
 
 

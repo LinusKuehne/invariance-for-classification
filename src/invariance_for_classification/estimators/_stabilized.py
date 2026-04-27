@@ -14,8 +14,6 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.utils import check_random_state, resample
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
-from ..rankings import loeo_regret
-
 logger = logging.getLogger(__name__)
 
 
@@ -168,48 +166,6 @@ def _pval_subset_worker(
     return result
 
 
-def _loeo_subset_worker(
-    subset,
-    X,
-    y,
-    environment,
-    loeo_classifier_type,
-    loeo_random_state,
-    pred_classifiers,
-    pred_scoring,
-):
-    """Evaluate a single feature subset using LOEO regret ranking.
-
-    Computes the LOEO regret score and fits every classifier in
-    *pred_classifiers*.  Models are always fitted because the invariance
-    cutoff is not known until all subsets have been evaluated.
-
-    Returns
-    -------
-    dict
-        Always contains ``"subset"`` (list[int]) and ``"inv_score"`` (float).
-        Additionally contains ``"{name}_model"`` / ``"{name}_score"``
-        for each classifier in *pred_classifiers*.
-    """
-    subset = list(subset)
-    X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
-    scores = loeo_regret(
-        Y=y,
-        E=environment,
-        X_S=X_S,
-        classifier_type=loeo_classifier_type,
-        random_state=loeo_random_state,
-    )
-    result: dict[str, Any] = {"subset": subset, "inv_score": scores["mean"]}
-
-    for name, clf in pred_classifiers.items():
-        model, score = _fit_and_score(X_S, y, environment, clf, pred_scoring)
-        result[f"{name}_model"] = model
-        result[f"{name}_score"] = score
-
-    return result
-
-
 def _bootstrap_predictiveness_worker(
     seed, X, y, S_max, pred_classifier, pred_scoring="mean", environment=None
 ):
@@ -237,41 +193,6 @@ def _bootstrap_predictiveness_worker(
     return _aggregate_score(y[oob_indices], y_pred, env_oob, pred_scoring)
 
 
-def _loeo_regret_inv_bootstrap_worker(
-    seed,
-    X,
-    y,
-    environment,
-    S_best,
-    loeo_classifier_type,
-    loeo_random_state,
-):
-    """Worker to bootstrap a single LOEO ranking score for invariance cutoff."""
-    rng = np.random.RandomState(seed)
-    n_samples = X.shape[0]
-    indices = np.asarray(resample(np.arange(n_samples), replace=True, random_state=rng))
-
-    X_boot = X[indices]
-    y_boot = y[indices]
-    env_boot = environment[indices]
-
-    # need at least 2 environments for meaningful ranking
-    if len(np.unique(env_boot)) < 2:
-        return None
-
-    X_S_boot = X_boot[:, S_best] if len(S_best) > 0 else np.zeros((len(indices), 0))
-
-    scores = loeo_regret(
-        Y=y_boot,
-        E=env_boot,
-        X_S=X_S_boot,
-        classifier_type=loeo_classifier_type,
-        random_state=loeo_random_state,
-    )
-
-    return scores["mean"]
-
-
 # ---------------------------------------------------------------------------
 # main estimator
 # ---------------------------------------------------------------------------
@@ -295,9 +216,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
     alpha_inv : float, default=0.05
         For statistical invariance tests: significance level. Subsets with
         p-value >= alpha_inv are considered invariant.
-        For LOEO-regret ranking: quantile of the bootstrap distribution of the best
-        subset's invariance score used as the cutoff. Subsets with invariance
-        score >= this cutoff are kept.
 
     alpha_pred : float, default=0.05
         parameter controlling the predictive score cutoff (related to the quantile
@@ -318,7 +236,7 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         Passed to the invariance test's ``test_classifier_type`` parameter.
 
     invariance_test : str, default="inv_residual"
-        The invariance test or ranking method to use. Options:
+        The invariance test to use. Options:
         - "inv_residual": InvariantResidualDistributionTest
         - "tram_gcm": TramGcmTest
         - "wgcm_est": WGCMTest with method="est"
@@ -326,9 +244,6 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         - "delong": DeLongTest
         - "inv_env_pred": InvariantEnvironmentPredictionTest
         - "crt": ConditionalRandomizationTest
-        - "loeo_regret": Uses LOEO regret ranking (not a statistical test). Subsets
-          are ranked by their LOEO regret score and filtered using a
-          bootstrap-based cutoff instead of a p-value threshold.
 
     pred_scoring : str, default="mean"
         Strategy for computing the predictiveness score of invariant subsets.
@@ -464,93 +379,51 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         )
 
         # --- Step 1: evaluate all subsets (invariance + fit classifiers) ---
-        if self.invariance_test == "loeo_regret":
-            all_results = cast(
-                list[dict[str, Any]],
-                Parallel(n_jobs=self.n_jobs)(
-                    delayed(_loeo_subset_worker)(
-                        subset,
-                        X,
-                        y_encoded,
-                        environment,
-                        self.test_classifier_type,
-                        self.random_state,
-                        pred_classifiers,
-                        self.pred_scoring,
-                    )
-                    for subset in feature_subsets
-                ),
-            )
+        inv_test = self._setup_inv_test()
 
+        all_results = cast(
+            list[dict[str, Any]],
+            Parallel(n_jobs=self.n_jobs)(
+                delayed(_pval_subset_worker)(
+                    subset,
+                    X,
+                    y_encoded,
+                    environment,
+                    inv_test,
+                    pred_classifiers,
+                    self.alpha_inv,
+                    self.pred_scoring,
+                )
+                for subset in feature_subsets
+            ),
+        )
+
+        if self.verbose:
+            for r in all_results:
+                if self.verbose > 1:
+                    logger.debug(f"Subset {r['subset']}: p-value={r['p_value']:.4f}")
+                if r["p_value"] >= self.alpha_inv:
+                    logger.info(
+                        f"Subset {r['subset']} is invariant (p={r['p_value']:.4f})"
+                    )
+
+        invariant_results = [r for r in all_results if r["p_value"] >= self.alpha_inv]
+        if not invariant_results:
             if self.verbose:
-                for r in all_results:
-                    if self.verbose > 1:
-                        logger.debug(
-                            f"Subset {r['subset']}: loeo_score={r['inv_score']:.6f}"
-                        )
-
-            # compute invariance cutoff via bootstrap, then filter
-            inv_cutoff = self._compute_invariance_cutoff(
-                X, y_encoded, environment, all_results
-            )
-            invariant_results = [r for r in all_results if r["inv_score"] >= inv_cutoff]
-            if not invariant_results:
-                if self.verbose:
-                    logger.warning(
-                        "No subsets above invariance cutoff. "
-                        "Using subset with highest LOEO regret score."
-                    )
-                invariant_results = [max(all_results, key=lambda x: x["inv_score"])]
-        else:
-            inv_test = self._setup_inv_test()
-
-            all_results = cast(
-                list[dict[str, Any]],
-                Parallel(n_jobs=self.n_jobs)(
-                    delayed(_pval_subset_worker)(
-                        subset,
-                        X,
-                        y_encoded,
-                        environment,
-                        inv_test,
-                        pred_classifiers,
-                        self.alpha_inv,
-                        self.pred_scoring,
-                    )
-                    for subset in feature_subsets
-                ),
-            )
-
-            if self.verbose:
-                for r in all_results:
-                    if self.verbose > 1:
-                        logger.debug(
-                            f"Subset {r['subset']}: p-value={r['p_value']:.4f}"
-                        )
-                    if r["p_value"] >= self.alpha_inv:
-                        logger.info(
-                            f"Subset {r['subset']} is invariant (p={r['p_value']:.4f})"
-                        )
-
-            invariant_results = [
-                r for r in all_results if r["p_value"] >= self.alpha_inv
-            ]
-            if not invariant_results:
-                if self.verbose:
-                    logger.warning(
-                        "No invariant subsets found. Using subset with max p-value."
-                    )
-                # fallback: pick best p-value subset and fit classifiers for it
-                best = dict(max(all_results, key=lambda x: x["p_value"]))
-                subset = best["subset"]
-                X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
-                for name, clf in pred_classifiers.items():
-                    model, score = _fit_and_score(
-                        X_S, y_encoded, environment, clf, self.pred_scoring
-                    )
-                    best[f"{name}_model"] = model
-                    best[f"{name}_score"] = score
-                invariant_results = [best]
+                logger.warning(
+                    "No invariant subsets found. Using subset with max p-value."
+                )
+            # fallback: pick best p-value subset and fit classifiers for it
+            best = dict(max(all_results, key=lambda x: x["p_value"]))
+            subset = best["subset"]
+            X_S = X[:, subset] if len(subset) > 0 else np.zeros((X.shape[0], 0))
+            for name, clf in pred_classifiers.items():
+                model, score = _fit_and_score(
+                    X_S, y_encoded, environment, clf, self.pred_scoring
+                )
+                best[f"{name}_model"] = model
+                best[f"{name}_score"] = score
+            invariant_results = [best]
 
         self.n_subsets_total_ = 2**n_features
         self.n_invariant_subsets_ = len(invariant_results)
@@ -561,8 +434,8 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
         active_by_clf: dict[str, list[dict[str, Any]]] = {}
         n_pred_by_clf: dict[str, int] = {}
 
-        # key that holds the invariance metric (p-value or LOEO score)
-        inv_key = "inv_score" if self.invariance_test == "loeo_regret" else "p_value"
+        # key that holds the invariance metric
+        inv_key = "p_value"
 
         for ct, clf in pred_classifiers.items():
             # build per-classifier list from the shared invariant results
@@ -850,43 +723,3 @@ class StabilizedClassificationClassifier(ClassifierMixin, BaseEstimator):
             return -np.inf
 
         return np.quantile(bootstrap_scores, self.alpha_pred)
-
-    def _compute_invariance_cutoff(self, X, y, environment, all_stats):
-        """Compute invariance cutoff via bootstrapping the best LOEO-ranked subset."""
-        if not all_stats:
-            return -np.inf
-
-        # Exclude the empty set when selecting S_best: its LOEO regret is
-        # trivially 0 (all environment-specific models collapse to the class
-        # prior), which would produce an unreasonably tight cutoff that filters
-        # out every meaningful subset.
-        non_empty = [s for s in all_stats if len(s["subset"]) > 0]
-        if non_empty:
-            S_best = max(non_empty, key=lambda x: x["inv_score"])["subset"]
-        else:
-            S_best = max(all_stats, key=lambda x: x["inv_score"])["subset"]
-
-        seeds = self.random_state_.randint(
-            0, np.iinfo(np.int32).max, size=self.n_bootstrap
-        )
-
-        bootstrap_scores = Parallel(n_jobs=self.n_jobs)(
-            delayed(_loeo_regret_inv_bootstrap_worker)(
-                seed,
-                X,
-                y,
-                environment,
-                S_best,
-                self.test_classifier_type,
-                self.random_state,
-            )
-            for seed in seeds
-        )
-
-        # filter None values (if bootstrap sample had < 2 environments)
-        bootstrap_scores = [s for s in bootstrap_scores if s is not None]
-
-        if not bootstrap_scores:
-            return -np.inf
-
-        return np.quantile(bootstrap_scores, self.alpha_inv)
