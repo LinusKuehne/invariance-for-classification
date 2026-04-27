@@ -104,12 +104,12 @@ NORMAL_COLS: dict[str, list[str]] = {
 # (display_name, invariance_test, test_classifier_type or None)
 # Limited to those appearing in the paper tables.
 SC_CONFIGS: list[tuple[str, str, str | None]] = [
-    # ("DeLong(RF)", "delong", "RF"),
-    # ("DeLong(LR)", "delong", "LR"),
-    # ("InvEnvPred(RF)", "inv_env_pred", "RF"),
+    ("DeLong(RF)", "delong", "RF"),
+    ("DeLong(LR)", "delong", "LR"),
+    ("InvEnvPred(RF)", "inv_env_pred", "RF"),
     ("Residual(RF)", "inv_residual", "RF"),
-    # ("Residual(LR)", "inv_residual", "LR"),
-    # ("TramGCM(RF)", "tram_gcm", "RF"),
+    ("Residual(LR)", "inv_residual", "LR"),
+    ("TramGCM(RF)", "tram_gcm", "RF"),
     ("TramGCM(LR)", "tram_gcm", "LR"),
     # ("WGCM_est", "wgcm_est", None),
     # ("WGCM_fix", "wgcm_fix", None),
