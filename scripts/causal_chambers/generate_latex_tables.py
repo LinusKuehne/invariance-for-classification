@@ -2,13 +2,15 @@
 Generate LaTeX tables from OOD evaluation results.
 
 Reads the raw per-rep CSV files produced by evaluate_OOD_predictions.py
-for datasets d_lin, d_nonlin, and d_spur, and outputs five LaTeX tables:
+for datasets d_lin, d_nonlin, and d_spur, and reads the runtime CSV produced by
+runtime_analysis.py for one dataset. It outputs six LaTeX tables:
 
   1. tab:main-results          - worst-case accuracy, D-nonlin + D-spur (main body)
   2. tab:main-results-full     - worst-case accuracy, all three datasets (appendix)
   3. tab:main-results-BCE      - worst-case BCE loss, D-nonlin + D-spur (appendix)
   4. tab:main-results-BCE-full - worst-case BCE loss, all three datasets (appendix)
   5. tab:appendix-ensemble-vs-best - SC vs. IMP for each invariance test
+  6. runtime table             - Table 1 row set, single-dataset runtime summary
 
 Tables 1/1b show only the tram-GCM test for SC and IMP.  Table 2 shows all
 tests side-by-side.  The metric for tables 1/1b is: minimum accuracy (or
@@ -171,6 +173,41 @@ def _load_metric(
             vals = m.groupby("rep")[metric].min().to_numpy()
         else:
             vals = m.groupby("rep")[metric].max().to_numpy()
+        out[method] = vals
+    return out
+
+
+def _load_runtime(
+    results_dir: str,
+    dataset: str,
+    n_obs: int,
+) -> dict[str, np.ndarray]:
+    """Load per-method runtime CSV and return {method: array_of_runtime_per_rep}."""
+    path = os.path.join(results_dir, dataset, f"OOD_runtime_{dataset}_n{n_obs}.csv")
+    if not os.path.exists(path):
+        print(f"WARNING: {path} not found, skipping runtime dataset {dataset}")
+        return {}
+
+    try:
+        df = pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        print(f"WARNING: {path} is empty, skipping runtime dataset {dataset}")
+        return {}
+
+    if df.empty:
+        print(
+            f"WARNING: {path} has no runtime rows, skipping runtime dataset {dataset}"
+        )
+        return {}
+
+    out: dict[str, np.ndarray] = {}
+    for method in df["method"].unique():
+        vals = (
+            df[df["method"] == method]
+            .groupby("rep")["runtime_seconds"]
+            .mean()
+            .to_numpy()
+        )
         out[method] = vals
     return out
 
@@ -459,6 +496,54 @@ def build_table2(
     return "\n".join(lines)
 
 
+def build_runtime_table(
+    runtime_data: dict[str, dict[str, np.ndarray]],
+    decimals: int,
+    dataset: str = "d_nonlin",
+) -> str:
+    """Build a single-dataset runtime table using the Table 1 row order.
+
+    IMP/"best" rows are omitted because they do not correspond to separate fits.
+    """
+    col_spec = "lc"
+
+    def _runtime_cell(method: str) -> str:
+        vals = runtime_data.get(dataset, {}).get(method)
+        if vals is None or len(vals) == 0:
+            return "---"
+        return _fmt(float(np.mean(vals)), _ci_half_width(vals), decimals)
+
+    lines: list[str] = []
+    a = lines.append
+
+    a(r"\begin{tabular}{@{}" + col_spec + r"@{}}")
+    a(r"    \toprule")
+    a(r"    Method")
+    a(f"      & {{{DS_LABELS[dataset]} runtime (s)}} \\\\")
+    a(r"    \midrule")
+
+    a(r"    \multicolumn{2}{@{}l}{\textbf{Linear methods}} \\[2pt]")
+    for csv_name, latex_name in TABLE1_LINEAR:
+        if csv_name.endswith(", best"):
+            continue
+        a(f"    {latex_name}")
+        a(f"      & {_runtime_cell(csv_name)} \\\\")
+
+    a(r"    \midrule")
+
+    a(r"    \multicolumn{2}{@{}l}{\textbf{Nonlinear methods}} \\[2pt]")
+    for csv_name, latex_name in TABLE1_NONLINEAR:
+        if csv_name.endswith(", best"):
+            continue
+        a(f"    {latex_name}")
+        a(f"      & {_runtime_cell(csv_name)} \\\\")
+
+    a(r"  \bottomrule")
+    a(r"\end{tabular}")
+
+    return "\n".join(lines)
+
+
 # =============================================================================
 # main
 # =============================================================================
@@ -629,10 +714,12 @@ def main(
     decimals: int,
     n_obs: int,
     spider_output: str | None = None,
+    runtime_dataset: str = "d_nonlin",
 ) -> None:
     # Load data for all datasets
     data_acc: dict[str, dict[str, np.ndarray]] = {}
     data_bce: dict[str, dict[str, np.ndarray]] = {}
+    data_runtime: dict[str, dict[str, np.ndarray]] = {}
     subset_data: dict[str, dict[str, tuple[float, float]]] = {}
     env_data: dict[str, dict[str, dict[int, np.ndarray]]] = {}
     for ds in DATASETS:
@@ -644,6 +731,7 @@ def main(
         )
         subset_data[ds] = _load_subset_counts(results_dir, ds, n_obs)
         env_data[ds] = _load_env_acc(results_dir, ds, n_obs)
+    data_runtime[runtime_dataset] = _load_runtime(results_dir, runtime_dataset, n_obs)
 
     # Two-column versions (D-nonlin + D-spur) — main body tables
     table1_acc_main = build_table1(
@@ -678,6 +766,7 @@ def main(
     )
 
     table2 = build_table2(data_acc, subset_data, decimals, n_obs)
+    runtime_table = build_runtime_table(data_runtime, decimals, dataset=runtime_dataset)
 
     full = (
         "% =============================================================================\n"
@@ -709,6 +798,12 @@ def main(
         "% =============================================================================\n"
         "\n"
         f"{table2}\n"
+        "\n\n"
+        "% =============================================================================\n"
+        f"% Runtime table: Table 1 row set ({DS_LABELS[runtime_dataset]})\n"
+        "% =============================================================================\n"
+        "\n"
+        f"{runtime_table}\n"
         "\n\n"
     )
 
@@ -782,6 +877,12 @@ if __name__ == "__main__":
         default=None,
         help="Path for the spider chart PDF/PNG (default: <results-dir>/spider_charts.pdf).",
     )
+    parser.add_argument(
+        "--runtime-dataset",
+        choices=DATASETS,
+        default="d_nonlin",
+        help="Dataset to use for the single-dataset runtime table (default: d_nonlin).",
+    )
     args = parser.parse_args()
     if args.output is None:
         args.output = os.path.join(args.results_dir, f"latex_tables_n{args.n_obs}.txt")
@@ -791,4 +892,5 @@ if __name__ == "__main__":
         decimals=args.decimals,
         n_obs=args.n_obs,
         spider_output=args.spider_output,
+        runtime_dataset=args.runtime_dataset,
     )
