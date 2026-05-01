@@ -54,6 +54,7 @@ class ExperimentConfig:
     include_x6: bool = False
     noise_distribution: NoiseDistribution = "gaussian"
     student_t_df: int = 3
+    x4_uses_x1_x3: bool = False
     lineargaussian: bool = False
     simple: bool = False
     bounds: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0)
@@ -211,6 +212,7 @@ def run_single_run(
                         cost=cost,
                         intervene_on_x1=config.intervene_on_x1,
                         simple=config.simple,
+                        x4_uses_x1_x3=config.x4_uses_x1_x3,
                         objective=objective,  # type: ignore[arg-type]
                         restarts=config.attack_restarts,
                         steps=config.attack_steps,

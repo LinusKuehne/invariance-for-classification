@@ -77,11 +77,13 @@ class AttackMechanisms(nn.Module):
         hidden_dim: int = 64,
         intervene_on_x1: bool = True,
         simple: bool = False,
+        x4_uses_x1_x3: bool = False,
     ) -> None:
         super().__init__()
         self.bound = float(bound)
         self.intervene_on_x1 = intervene_on_x1
         self.simple = simple
+        self.x4_uses_x1_x3 = x4_uses_x1_x3
         if simple:
             self.x1_net = ConstantAttack(bound) if intervene_on_x1 else None
             self.x4_net = ConstantAttack(bound)
@@ -89,7 +91,8 @@ class AttackMechanisms(nn.Module):
             self.x1_net = (
                 AttackNetwork(2, hidden_dim, bound) if intervene_on_x1 else None
             )
-            self.x4_net = AttackNetwork(3, hidden_dim, bound)
+            x4_input_dim = 5 if x4_uses_x1_x3 else 3
+            self.x4_net = AttackNetwork(x4_input_dim, hidden_dim, bound)
 
     def perturb_x1(self, x2: Tensor, noise: Tensor) -> Tensor:
         if self.x1_net is None:
@@ -98,10 +101,22 @@ class AttackMechanisms(nn.Module):
             return self.x1_net(x2)
         return self.x1_net(torch.cat([x2, noise], dim=1))
 
-    def perturb_x4(self, y: Tensor, x2: Tensor, noise: Tensor) -> Tensor:
+    def perturb_x4(
+        self,
+        y: Tensor,
+        x2: Tensor,
+        noise: Tensor,
+        x1: Tensor | None = None,
+        x3: Tensor | None = None,
+    ) -> Tensor:
         if self.simple:
             return self.x4_net(y)
-        return self.x4_net(torch.cat([y, x2, noise], dim=1))
+        pieces = [y, x2, noise]
+        if self.x4_uses_x1_x3:
+            if x1 is None or x3 is None:
+                raise ValueError("x1 and x3 are required when x4_uses_x1_x3 is enabled.")
+            pieces.extend([x1, x3])
+        return self.x4_net(torch.cat(pieces, dim=1))
 
 
 class NonlinearStableBlanketSCM:
@@ -172,7 +187,7 @@ class NonlinearStableBlanketSCM:
         x3 = torch.tanh(1.2 * y) + 0.45 * y.square() + 0.5 * eps3
         x4 = self._clean_x4_from_parents(y, x2, eps4)
         if attack is not None:
-            x4 = x4 + attack.perturb_x4(y, x2, eps4)
+            x4 = x4 + attack.perturb_x4(y, x2, eps4, x1=x1, x3=x3)
 
         x5 = self._clean_x5(x4, eps5)
         pieces = [x1, x2, x3, x4, x5]
@@ -209,7 +224,7 @@ class NonlinearStableBlanketSCM:
         clean_x4 = self._clean_x4_from_parents(y, x2, eps4)
         delta_x4 = torch.zeros_like(clean_x4)
         if attack is not None:
-            delta_x4 = attack.perturb_x4(y, x2, eps4)
+            delta_x4 = attack.perturb_x4(y, x2, eps4, x1=x1, x3=x3)
         x4 = clean_x4 + delta_x4
 
         x5 = self._clean_x5(x4, eps5)
@@ -313,7 +328,7 @@ class LinearGaussianStableBlanketSCM:
         clean_x4 = self._clean_x4_from_parents(y, x2, eps4)
         delta_x4 = torch.zeros_like(clean_x4)
         if attack is not None:
-            delta_x4 = attack.perturb_x4(y, x2, eps4)
+            delta_x4 = attack.perturb_x4(y, x2, eps4, x1=x1, x3=x3)
         x4 = clean_x4 + delta_x4
 
         x5 = self._clean_x5(x4, eps5)

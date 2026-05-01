@@ -32,14 +32,25 @@ def _blend_with_white(color: str, weight: float) -> tuple[float, float, float]:
     return tuple((1.0 - weight) * channel + weight for channel in rgb)
 
 
-def save_plots(results: pd.DataFrame, output_dir: str | Path, attack_mode: str) -> None:
+def _save_figure(filename: Path) -> None:
+    plt.savefig(filename, dpi=180)
+    plt.savefig(filename.with_suffix(".pdf"))
+
+
+def save_plots(
+    results: pd.DataFrame,
+    output_dir: str | Path,
+    attack_mode: str,
+    max_sweep_value: float | None = None,
+    endpoint_train_sizes_only: bool = False,
+) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     x_label = "Intervention bound" if attack_mode == "bound" else "Adversary cost"
     x_col = "sweep_value"
     filename_prefix = "mse_vs_bound" if attack_mode == "bound" else "mse_vs_cost"
-    if attack_mode == "bound":
-        results = results[results[x_col] <= 1.0]
+    if max_sweep_value is not None:
+        results = results[results[x_col] <= max_sweep_value]
     has_train_sweep = (
         "train_size" in results.columns and results["train_size"].nunique() > 1
     )
@@ -52,6 +63,7 @@ def save_plots(results: pd.DataFrame, output_dir: str | Path, attack_mode: str) 
                 x_label=x_label,
                 filename=output_dir / f"{filename_prefix}_{objective}.png",
                 objective=objective,
+                endpoint_train_sizes_only=endpoint_train_sizes_only,
             )
             continue
 
@@ -91,7 +103,7 @@ def save_plots(results: pd.DataFrame, output_dir: str | Path, attack_mode: str) 
         plt.title(f"{LABELS.get(objective, objective)} (mean +/- 95% CI)")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(output_dir / f"{filename_prefix}_{objective}.png", dpi=180)
+        _save_figure(output_dir / f"{filename_prefix}_{objective}.png")
         plt.close()
 
 
@@ -102,6 +114,7 @@ def _save_train_size_sweep_plot(
     x_label: str,
     filename: Path,
     objective: str,
+    endpoint_train_sizes_only: bool,
 ) -> None:
     stats = (
         group.groupby(["method", "train_size", x_col])["attacked_test_mse"]
@@ -113,7 +126,7 @@ def _save_train_size_sweep_plot(
     stats["ci95_radius"] = 1.96 * stats["sem"]
 
     train_sizes = sorted(stats["train_size"].unique())
-    if len(train_sizes) > 2:
+    if endpoint_train_sizes_only and len(train_sizes) > 2:
         train_sizes = [train_sizes[0], train_sizes[-1]]
     style_by_train_size = {
         train_size: TRAIN_SIZE_LINESTYLES[idx % len(TRAIN_SIZE_LINESTYLES)]
@@ -185,5 +198,5 @@ def _save_train_size_sweep_plot(
         loc="upper center",
     )
     plt.tight_layout()
-    plt.savefig(filename, dpi=180)
+    _save_figure(filename)
     plt.close()

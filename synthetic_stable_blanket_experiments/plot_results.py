@@ -30,6 +30,17 @@ def parse_args() -> argparse.Namespace:
         default="bound",
         help="Which x-axis/sweep type to plot.",
     )
+    parser.add_argument(
+        "--max-sweep-value",
+        type=float,
+        default=None,
+        help="Optional maximum x-axis sweep value to include, e.g. 1.0 for bounds.",
+    )
+    parser.add_argument(
+        "--endpoint-train-sizes-only",
+        action="store_true",
+        help="For train-size sweeps, plot only the smallest and largest train sizes.",
+    )
     return parser.parse_args()
 
 
@@ -39,7 +50,13 @@ def main() -> None:
     results_csv = args.results_csv or output_dir / "results_per_run.csv"
 
     results = pd.read_csv(results_csv)
-    save_plots(results, output_dir, attack_mode=args.attack_mode)
+    save_plots(
+        results,
+        output_dir,
+        attack_mode=args.attack_mode,
+        max_sweep_value=args.max_sweep_value,
+        endpoint_train_sizes_only=args.endpoint_train_sizes_only,
+    )
     print(f"Saved plots to {output_dir}")
 
 

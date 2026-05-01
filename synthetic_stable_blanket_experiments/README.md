@@ -34,6 +34,8 @@ so the attacked mechanisms become "clean mechanism + bounded deviation". The bou
 
 Passing `--disable-x1-intervention` turns off the direct intervention on `X1`, so only `X4` is directly attacked.
 Passing `--X6` keeps the same intervention set but augments the observed feature vector with the additional descendant `X6`.
+By default, the learned `X4` intervention can depend on `(Y, X2, eps4)`.
+Passing `--x4-uses-x1-x3` additionally lets it depend on `(X1, X3)`.
 
 There is also a cost-regularized attack mode. In that setting, the adversary optimizes its task objective while paying a penalty proportional to the average squared perturbation size,
 

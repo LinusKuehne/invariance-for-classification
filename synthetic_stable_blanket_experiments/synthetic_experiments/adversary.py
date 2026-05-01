@@ -46,6 +46,7 @@ def optimize_attack(
     cost: float | None,
     intervene_on_x1: bool,
     simple: bool,
+    x4_uses_x1_x3: bool,
     objective: AttackObjective,
     restarts: int,
     steps: int,
@@ -73,6 +74,7 @@ def optimize_attack(
             hidden_dim=hidden_dim,
             intervene_on_x1=intervene_on_x1,
             simple=simple,
+            x4_uses_x1_x3=x4_uses_x1_x3,
         ).to(scm.device)
         optimizer = torch.optim.Adam(attack.parameters(), lr=lr)
         generator = torch.Generator(device=scm.device)
@@ -129,6 +131,7 @@ def optimize_attack(
                 hidden_dim=hidden_dim,
                 intervene_on_x1=intervene_on_x1,
                 simple=simple,
+                x4_uses_x1_x3=x4_uses_x1_x3,
             ).to(scm.device)
             best_attack.load_state_dict(attack.state_dict())
 
