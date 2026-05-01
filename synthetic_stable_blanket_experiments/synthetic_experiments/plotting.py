@@ -37,6 +37,8 @@ def save_plots(results: pd.DataFrame, output_dir: str | Path, attack_mode: str) 
     x_label = "Intervention bound" if attack_mode == "bound" else "Adversary cost"
     x_col = "sweep_value"
     filename_prefix = "mse_vs_bound" if attack_mode == "bound" else "mse_vs_cost"
+    if attack_mode == "bound":
+        results = results[results[x_col] <= 1.0]
     has_train_sweep = (
         "train_size" in results.columns and results["train_size"].nunique() > 1
     )
