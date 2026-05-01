@@ -1,10 +1,38 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 from torch import Tensor, nn
+
+NoiseDistribution = Literal["gaussian", "student_t"]
+
+
+def _sample_noise(
+    n: int,
+    dim: int,
+    *,
+    device: torch.device,
+    distribution: NoiseDistribution,
+    student_t_df: int,
+    generator: Optional[torch.Generator],
+) -> Tensor:
+    randn_kwargs = {"device": device}
+    if generator is not None:
+        randn_kwargs["generator"] = generator
+    if distribution == "gaussian":
+        return torch.randn(n, dim, **randn_kwargs)
+    if distribution == "student_t":
+        if student_t_df <= 2:
+            raise ValueError("student_t_df must be greater than 2 for finite variance.")
+        numerator = torch.randn(n, dim, **randn_kwargs)
+        denominator_samples = torch.randn(n, dim, student_t_df, **randn_kwargs)
+        chi_square = denominator_samples.square().sum(dim=-1)
+        student_t = numerator / torch.sqrt(chi_square / float(student_t_df))
+        variance_scale = ((student_t_df - 2.0) / float(student_t_df)) ** 0.5
+        return variance_scale * student_t
+    raise ValueError(f"Unknown noise distribution: {distribution}")
 
 
 @dataclass(frozen=True)
@@ -84,13 +112,27 @@ class NonlinearStableBlanketSCM:
         device: str = "cpu",
         intervene_on_x1: bool = True,
         include_x6: bool = False,
+        noise_distribution: NoiseDistribution = "gaussian",
+        student_t_df: int = 3,
     ) -> None:
         self.device = torch.device(device)
         self.intervene_on_x1 = intervene_on_x1
         self.include_x6 = include_x6
+        self.noise_distribution = noise_distribution
+        self.student_t_df = int(student_t_df)
         mutable = (0, 3) if intervene_on_x1 else (3,)
         all_variables = (0, 1, 2, 3, 4, 5) if include_x6 else (0, 1, 2, 3, 4)
         self.graph_sets = GraphSets(all_variables=all_variables, mutable=mutable)
+
+    def _noise(self, n: int, generator: Optional[torch.Generator]) -> Tensor:
+        return _sample_noise(
+            n,
+            1,
+            device=self.device,
+            distribution=self.noise_distribution,
+            student_t_df=self.student_t_df,
+            generator=generator,
+        )
 
     @staticmethod
     def _clean_x1(x2: Tensor, noise: Tensor) -> Tensor:
@@ -114,16 +156,13 @@ class NonlinearStableBlanketSCM:
         attack: Optional[AttackMechanisms] = None,
         generator: Optional[torch.Generator] = None,
     ) -> tuple[Tensor, Tensor]:
-        randn_kwargs = {"device": self.device}
-        if generator is not None:
-            randn_kwargs["generator"] = generator
-        x2 = torch.randn(n, 1, **randn_kwargs)
-        eps1 = torch.randn(n, 1, **randn_kwargs)
-        eps_y = torch.randn(n, 1, **randn_kwargs)
-        eps3 = torch.randn(n, 1, **randn_kwargs)
-        eps4 = torch.randn(n, 1, **randn_kwargs)
-        eps5 = torch.randn(n, 1, **randn_kwargs)
-        eps6 = torch.randn(n, 1, **randn_kwargs)
+        x2 = self._noise(n, generator)
+        eps1 = self._noise(n, generator)
+        eps_y = self._noise(n, generator)
+        eps3 = self._noise(n, generator)
+        eps4 = self._noise(n, generator)
+        eps5 = self._noise(n, generator)
+        eps6 = self._noise(n, generator)
 
         x1 = self._clean_x1(x2, eps1)
         if attack is not None and self.intervene_on_x1:
@@ -150,16 +189,13 @@ class NonlinearStableBlanketSCM:
         attack: Optional[AttackMechanisms] = None,
         generator: Optional[torch.Generator] = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        randn_kwargs = {"device": self.device}
-        if generator is not None:
-            randn_kwargs["generator"] = generator
-        x2 = torch.randn(n, 1, **randn_kwargs)
-        eps1 = torch.randn(n, 1, **randn_kwargs)
-        eps_y = torch.randn(n, 1, **randn_kwargs)
-        eps3 = torch.randn(n, 1, **randn_kwargs)
-        eps4 = torch.randn(n, 1, **randn_kwargs)
-        eps5 = torch.randn(n, 1, **randn_kwargs)
-        eps6 = torch.randn(n, 1, **randn_kwargs)
+        x2 = self._noise(n, generator)
+        eps1 = self._noise(n, generator)
+        eps_y = self._noise(n, generator)
+        eps3 = self._noise(n, generator)
+        eps4 = self._noise(n, generator)
+        eps5 = self._noise(n, generator)
+        eps6 = self._noise(n, generator)
 
         clean_x1 = self._clean_x1(x2, eps1)
         delta_x1 = torch.zeros_like(clean_x1)
@@ -194,13 +230,27 @@ class LinearGaussianStableBlanketSCM:
         device: str = "cpu",
         intervene_on_x1: bool = True,
         include_x6: bool = False,
+        noise_distribution: NoiseDistribution = "gaussian",
+        student_t_df: int = 3,
     ) -> None:
         self.device = torch.device(device)
         self.intervene_on_x1 = intervene_on_x1
         self.include_x6 = include_x6
+        self.noise_distribution = noise_distribution
+        self.student_t_df = int(student_t_df)
         mutable = (0, 3) if intervene_on_x1 else (3,)
         all_variables = (0, 1, 2, 3, 4, 5) if include_x6 else (0, 1, 2, 3, 4)
         self.graph_sets = GraphSets(all_variables=all_variables, mutable=mutable)
+
+    def _noise(self, n: int, generator: Optional[torch.Generator]) -> Tensor:
+        return _sample_noise(
+            n,
+            1,
+            device=self.device,
+            distribution=self.noise_distribution,
+            student_t_df=self.student_t_df,
+            generator=generator,
+        )
 
     @staticmethod
     def _clean_x1(x2: Tensor, noise: Tensor) -> Tensor:
@@ -243,16 +293,13 @@ class LinearGaussianStableBlanketSCM:
         attack: Optional[AttackMechanisms] = None,
         generator: Optional[torch.Generator] = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        randn_kwargs = {"device": self.device}
-        if generator is not None:
-            randn_kwargs["generator"] = generator
-        x2 = torch.randn(n, 1, **randn_kwargs)
-        eps1 = torch.randn(n, 1, **randn_kwargs)
-        eps_y = torch.randn(n, 1, **randn_kwargs)
-        eps3 = torch.randn(n, 1, **randn_kwargs)
-        eps4 = torch.randn(n, 1, **randn_kwargs)
-        eps5 = torch.randn(n, 1, **randn_kwargs)
-        eps6 = torch.randn(n, 1, **randn_kwargs)
+        x2 = self._noise(n, generator)
+        eps1 = self._noise(n, generator)
+        eps_y = self._noise(n, generator)
+        eps3 = self._noise(n, generator)
+        eps4 = self._noise(n, generator)
+        eps5 = self._noise(n, generator)
+        eps6 = self._noise(n, generator)
 
         clean_x1 = self._clean_x1(x2, eps1)
         delta_x1 = torch.zeros_like(clean_x1)

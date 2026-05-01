@@ -97,6 +97,46 @@ python run_experiments.py \
   --bounds 0.25 0.5 1.0 2.0 4.0
 ```
 
+## Train-size sweep
+
+```bash
+python run_experiments.py \
+  --output-dir outputs_train_size_sweep \
+  --torch-num-threads 1 \
+  --train-size-sweep 1000 4000 20000 \
+  --n-val 1000 \
+  --n-test 4000 \
+  --attack-steps 400 \
+  --attack-restarts 5 \
+  --attack-batch-size 512 \
+  --attack-eval-size 10000 \
+  --num-runs 3 \
+  --bounds 0.25 0.5 1.0 2.0
+```
+
+This repeats the leader training and follower attack for each requested training
+set size. The plots place all method-by-train-size curves for a given objective
+in one figure, and the CSV outputs include a `train_size` column for custom
+plotting later.
+
+To give the clean training distribution heavier tails, use Student-t exogenous
+noise. The samples are rescaled to have variance one, matching the Gaussian
+default:
+
+```bash
+python run_experiments.py \
+  --output-dir outputs_train_size_sweep_student_t \
+  --noise-distribution student_t \
+  --student-t-df 3 \
+  --train-size-sweep 1000 4000 20000 \
+  --n-val 1000 \
+  --n-test 4000 \
+  --attack-steps 400 \
+  --attack-restarts 5 \
+  --num-runs 3 \
+  --bounds 0.25 0.5 1.0 2.0
+```
+
 ## Cost-regularized run
 
 ```bash

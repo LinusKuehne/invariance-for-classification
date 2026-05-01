@@ -13,6 +13,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--torch-num-threads", type=int, default=1)
     p.add_argument("--n-train", type=int, default=20000)
+    p.add_argument(
+        "--train-size-sweep",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional list of training set sizes to sweep; overrides --n-train.",
+    )
     p.add_argument("--n-val", type=int, default=3000)
     p.add_argument("--n-test", type=int, default=4000)
     p.add_argument("--predictor-hidden-dim", type=int, default=256)
@@ -29,6 +36,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--attack-restarts", type=int, default=5)
     p.add_argument("--attack-eval-size", type=int, default=10000)
     p.add_argument("--X6", action="store_true", dest="include_x6")
+    p.add_argument(
+        "--noise-distribution",
+        type=str,
+        choices=["gaussian", "student_t"],
+        default="gaussian",
+        help="Exogenous noise distribution. student_t adds heavier tails.",
+    )
+    p.add_argument(
+        "--student-t-df",
+        type=int,
+        default=3,
+        help="Degrees of freedom for --noise-distribution student_t; must be > 2.",
+    )
     p.add_argument("--lineargaussian", action="store_true")
     p.add_argument("--simple", action="store_true")
     p.add_argument(
@@ -47,11 +67,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    train_sizes = (
+        None if args.train_size_sweep is None else tuple(args.train_size_sweep)
+    )
     config = ExperimentConfig(
         output_dir=args.output_dir,
         device=args.device,
         torch_num_threads=args.torch_num_threads,
         n_train=args.n_train,
+        train_sizes=train_sizes,
         n_val=args.n_val,
         n_test=args.n_test,
         predictor_hidden_dim=args.predictor_hidden_dim,
@@ -70,6 +94,8 @@ def main() -> None:
         attack_mode=args.attack_mode,
         intervene_on_x1=not args.disable_x1_intervention,
         include_x6=args.include_x6,
+        noise_distribution=args.noise_distribution,
+        student_t_df=args.student_t_df,
         lineargaussian=args.lineargaussian,
         simple=args.simple,
         bounds=tuple(args.bounds),
