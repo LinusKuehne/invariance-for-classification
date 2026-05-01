@@ -60,7 +60,13 @@ def parse_args() -> argparse.Namespace:
         "--costs", type=float, nargs="+", default=[0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
     )
     p.add_argument("--max-perturbation-bound", type=float, default=100.0)
-    p.add_argument("--objectives", type=str, nargs="+", default=["signed_error", "mse"])
+    p.add_argument(
+        "--objectives",
+        type=str,
+        nargs="+",
+        choices=["signed_error", "mse", "prediction"],
+        default=["signed_error", "mse", "prediction"],
+    )
     p.add_argument("--num-runs", type=int, default=3)
     return p.parse_args()
 

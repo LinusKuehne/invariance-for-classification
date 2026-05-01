@@ -23,6 +23,7 @@ TRAIN_SIZE_SHADE_WEIGHTS = [0.55, 0.25, 0.0]
 LABELS = {
     "signed_error": r"Adversary minimizes $\mathbb{E}[Y-f_S(X_S)]$",
     "mse": r"Adversary maximizes MSE",
+    "prediction": r"Adversary minimizes $\mathbb{E}[f_S(X_S)]$",
 }
 
 

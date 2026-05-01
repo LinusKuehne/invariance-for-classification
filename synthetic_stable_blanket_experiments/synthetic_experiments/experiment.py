@@ -59,7 +59,7 @@ class ExperimentConfig:
     bounds: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0)
     costs: tuple[float, ...] = (0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0)
     max_perturbation_bound: float = 2.0
-    objectives: tuple[str, ...] = ("signed_error", "mse")
+    objectives: tuple[str, ...] = ("signed_error", "mse", "prediction")
     num_runs: int = 3
     output_dir: str = "outputs"
 

@@ -9,7 +9,7 @@ from torch import Tensor
 from .models import PredictorBundle
 from .scm import AttackMechanisms, NonlinearStableBlanketSCM
 
-AttackObjective = Literal["signed_error", "mse"]
+AttackObjective = Literal["signed_error", "mse", "prediction"]
 
 
 @dataclass
@@ -29,6 +29,8 @@ def _objective(y: Tensor, pred: Tensor, objective: AttackObjective) -> Tensor:
         return torch.mean(y - pred)
     if objective == "mse":
         return torch.mean((y - pred) ** 2)
+    if objective == "prediction":
+        return torch.mean(pred)
     raise ValueError(objective)
 
 
@@ -85,8 +87,8 @@ def optimize_attack(
             value = _objective(y_adv, pred, objective)
             strength = _intervention_strength(delta_x1, delta_x4)
             if cost is None:
-                loss = value if objective == "signed_error" else -value
-            elif objective == "signed_error":
+                loss = value if objective != "mse" else -value
+            elif objective != "mse":
                 loss = value + cost * strength
             else:
                 loss = -value + cost * strength
@@ -114,7 +116,7 @@ def optimize_attack(
             )
 
         better = best_value is None
-        if objective == "signed_error" and best_regularized_value is not None:
+        if objective != "mse" and best_regularized_value is not None:
             better = regularized_value_eval < best_regularized_value
         elif objective == "mse" and best_regularized_value is not None:
             better = regularized_value_eval > best_regularized_value

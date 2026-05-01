@@ -43,10 +43,11 @@ with regularization weight `c`. The x-axis is then the cost `c` instead of the p
 
 ## Adversarial objectives
 
-Two attack objectives are implemented:
+Three attack objectives are implemented:
 
 1. `signed_error`: minimize `E[Y - f_S(X_S)]`
 2. `mse`: maximize `E[(Y - f_S(X_S))^2]`
+3. `prediction`: minimize `E[f_S(X_S)]`
 
 Evaluation is always by MSE, and each method is evaluated **only on its own optimized adversary**.
 
