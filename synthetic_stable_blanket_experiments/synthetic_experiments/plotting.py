@@ -18,12 +18,17 @@ METHOD_MARKERS = {
     "stable_blanket": "s",
     "all_variables": "^",
 }
+METHOD_LABELS = {
+    "parents": r"$\mathrm{PA}(Y)$",
+    "stable_blanket": r"$\mathrm{SB}(Y)$",
+    "all_variables": "all variables",
+}
 TRAIN_SIZE_LINESTYLES = ["--", "-.", "-"]
 TRAIN_SIZE_SHADE_WEIGHTS = [0.55, 0.25, 0.0]
 LABELS = {
-    "signed_error": r"Adversary minimizes $\mathbb{E}[Y-f_S(X_S)]$",
-    "mse": r"Adversary maximizes MSE",
-    "prediction": r"Adversary minimizes $\mathbb{E}[f_S(X_S)]$",
+    "signed_error": r"follower minimizes $\mathbb{E}[Y-f_S(X_S)]$",
+    "mse": r"follower maximizes MSE",
+    "prediction": r"follower minimizes $\mathbb{E}[f_S(X_S)]$",
 }
 
 
@@ -46,7 +51,7 @@ def save_plots(
 ) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    x_label = "Intervention bound" if attack_mode == "bound" else "Adversary cost"
+    x_label = "intervention bound" if attack_mode == "bound" else "follower cost"
     x_col = "sweep_value"
     filename_prefix = "mse_vs_bound" if attack_mode == "bound" else "mse_vs_cost"
     if max_sweep_value is not None:
@@ -87,7 +92,7 @@ def save_plots(
                 sub["mean"],
                 color=color,
                 marker=METHOD_MARKERS[method],
-                label=method,
+                label=METHOD_LABELS[method],
             )
             plt.fill_between(
                 sub[x_col],
@@ -99,8 +104,8 @@ def save_plots(
             clean = group[group["method"] == method]["clean_test_mse"].mean()
             plt.axhline(clean, color=color, linestyle=":", alpha=0.35)
         plt.xlabel(x_label)
-        plt.ylabel("Own-adversary test MSE")
-        plt.title(f"{LABELS.get(objective, objective)} (mean +/- 95% CI)")
+        plt.ylabel("deployment MSE")
+        plt.title(LABELS.get(objective, objective))
         plt.legend()
         plt.tight_layout()
         _save_figure(output_dir / f"{filename_prefix}_{objective}.png")
@@ -144,7 +149,7 @@ def _save_train_size_sweep_plot(
             ].sort_values(x_col)
             if sub.empty:
                 continue
-            label = f"{method}, n={int(train_size)}"
+            label = f"{METHOD_LABELS[method]}, n={int(train_size)}"
             color = _blend_with_white(
                 METHOD_COLORS[method], shade_by_train_size[train_size]
             )
@@ -164,8 +169,8 @@ def _save_train_size_sweep_plot(
                 alpha=0.12,
             )
     plt.xlabel(x_label)
-    plt.ylabel("Own-adversary test MSE")
-    plt.title(f"{LABELS.get(objective, objective)} (mean +/- 95% CI)")
+    plt.ylabel("deployment MSE")
+    plt.title(LABELS.get(objective, objective))
     method_handles = [
         Line2D(
             [0],
@@ -173,7 +178,7 @@ def _save_train_size_sweep_plot(
             color=METHOD_COLORS[method],
             marker=METHOD_MARKERS[method],
             linestyle="-",
-            label=method,
+            label=METHOD_LABELS[method],
         )
         for method in METHOD_ORDER
     ]
