@@ -50,9 +50,13 @@ import causalchamber.lab as lab
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from utils import sample_truncnorm_integers, wait_for_completion
+
+from invariance_for_classification import StabilizedClassificationClassifier
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(DIR, "data")
@@ -61,14 +65,28 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SEED = 123
 N_SAMPLES = 2400  # split equally into probe and eval
 THRESHOLD = 12500  # Y = 1{ir_1 > THRESHOLD}, same as D-spur
-K_BINS = 3  # tertile bins of f_type score for follower policy
+K_BINS = 1  # bins of f_type score for follower policy
 BUDGETS = [0.0, 0.5, 1.0]
 
 SB_FEATURES = ["red", "green", "blue"]
+SB_V2_FEATURES = ["red", "green", "blue", "vis_2"]
+SB_B_FEATURES = ["red", "green", "blue", "ir_2", "vis_2"]
 ALL_FEATURES = ["red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3"]
 
-PRED_COLORS = {"f_sb": "#0072B2", "f_all": "#D55E00"}
-PRED_LABELS = {"f_sb": r"$\hat{f}_{\mathrm{SB}}$", "f_all": r"$\hat{f}_{\mathrm{all}}$"}
+PRED_COLORS = {
+    "f_sb": "#0072B2",
+    "f_sb_v2": "#56B4E9",
+    "f_sb_b": "#CC79A7",
+    "f_all": "#D55E00",
+    "f_sc": "#009E73",
+}
+PRED_LABELS = {
+    "f_sb": r"$\hat{f}_{\mathrm{SB}}$",
+    "f_sb_v2": r"$\hat{f}_{\mathrm{SB}+\mathrm{vis}_2}$",
+    "f_sb_b": r"$\hat{f}_{\mathrm{SB}+B}$",
+    "f_all": r"$\hat{f}_{\mathrm{all}}$",
+    "f_sc": r"SC (TramGCM, RF)",
+}
 
 
 # ─── action menu ──────────────────────────────────────────────────────────────
@@ -131,6 +149,15 @@ print(f"Action menu: {M} actions  ({[a['name'] for a in ACTIONS]})")
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 
+def restore_from_cube(df):
+    """Reconstruct R_all, Y_all, B_by_action, Z_by_action from the saved action cube."""
+    R = df[["red", "green", "blue"]].values
+    Y = df["Y"].values.astype(int)
+    B = {n: df[[f"ir_2_{n}", f"vis_2_{n}"]].values for n in ACTION_NAMES}
+    Z = {n: df[[f"ir_3_{n}", f"vis_3_{n}"]].values for n in ACTION_NAMES}
+    return R, Y, B, Z
+
+
 def build_X(R, B, Z, features):
     cols = {
         "red": R[:, 0],
@@ -149,6 +176,7 @@ def eval_metrics(y_true, p, threshold=0.5):
     y0 = y_true == 0
     return {
         "brier": float(np.mean((p - y_true) ** 2)),
+        "acc": float(np.mean((p >= threshold) == y_true)),
         "bce": float(log_loss(y_true, p)),
         "ef": float(p.mean()),
         "ef_y1": float(p[y1].mean()) if y1.any() else float("nan"),
@@ -161,98 +189,191 @@ def eval_metrics(y_true, p, threshold=0.5):
 
 rlab = lab.Lab(os.path.join(DIR, ".credentials"))
 
-df_train = pd.read_csv(os.path.join(DATA_DIR, "d_spur_train.csv"))
-X_train_sb = df_train[SB_FEATURES].values
-X_train_all = df_train[ALL_FEATURES].values
-y_train = df_train["Y"].values.astype(int)
+df_train_full = pd.read_csv(os.path.join(DATA_DIR, "d_spur_train.csv"))
+E_full = np.asarray(df_train_full["E"].values, dtype=int)
+y_full = np.asarray(df_train_full["Y"].values, dtype=int)
 
-f_sb = RandomForestClassifier(n_estimators=500, random_state=SEED)
-f_sb.fit(X_train_sb, y_train)
+X_train_sb = df_train_full[SB_FEATURES].values
+X_train_sb_v2 = df_train_full[SB_V2_FEATURES].values
+X_train_sb_b = df_train_full[SB_B_FEATURES].values
+X_train_all = df_train_full[ALL_FEATURES].values
 
-f_all = RandomForestClassifier(n_estimators=500, random_state=SEED)
-f_all.fit(X_train_all, y_train)
+# f_sb = RandomForestClassifier(n_estimators=500, random_state=SEED)
+# f_sb.fit(X_train_sb, y_full)
+# print(f"Trained f_sb    on {SB_FEATURES}  (n={len(y_full)})")
 
-print(f"Trained f_sb  on {SB_FEATURES}")
-print(f"Trained f_all on {ALL_FEATURES}")
+# f_sb_v2 = RandomForestClassifier(n_estimators=500, random_state=SEED)
+# f_sb_v2.fit(X_train_sb_v2, y_full)
+# print(f"Trained f_sb_v2 on {SB_V2_FEATURES}  (n={len(y_full)})")
 
-PREDICTORS = {"f_sb": (f_sb, SB_FEATURES), "f_all": (f_all, ALL_FEATURES)}
+# f_sb_b = RandomForestClassifier(n_estimators=500, random_state=SEED)
+# f_sb_b.fit(X_train_sb_b, y_full)
+# print(f"Trained f_sb_b  on {SB_B_FEATURES}  (n={len(y_full)})")
+
+# f_all = RandomForestClassifier(n_estimators=500, random_state=SEED)
+# f_all.fit(X_train_all, y_full)
+# print(f"Trained f_all   on {ALL_FEATURES}  (n={len(y_full)})")
+
+# Variable importance of ir_2
+# print("\n─── ir_2 variable importance ───")
+# for model, features in [(f_sb_b, SB_B_FEATURES), (f_all, ALL_FEATURES)]:
+#     imp = dict(zip(features, model.feature_importances_, strict=False))
+#     ranked = sorted(imp.items(), key=lambda x: x[1], reverse=True)
+#     ir2_rank = next(i + 1 for i, (f, _) in enumerate(ranked) if f == "ir_2")
+#     print(
+#         f"  {'f_sb_b' if features == SB_B_FEATURES else 'f_all':8s}  "
+#         f"ir_2 importance={imp['ir_2']:.4f}  rank={ir2_rank}/{len(features)}"
+#     )
+#     for feat, val in ranked:
+#         marker = " <--" if feat == "ir_2" else ""
+#         print(f"    {feat:<12} {val:.4f}{marker}")
+
+
+def _lr():
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(max_iter=1000, random_state=SEED)),
+        ]
+    )
+
+
+f_sb = _lr()
+f_sb.fit(X_train_sb, y_full)
+print(f"Trained f_sb    (LR) on {SB_FEATURES}  (n={len(y_full)})")
+
+f_sb_v2 = _lr()
+f_sb_v2.fit(X_train_sb_v2, y_full)
+print(f"Trained f_sb_v2 (LR) on {SB_V2_FEATURES}  (n={len(y_full)})")
+
+f_sb_b = _lr()
+f_sb_b.fit(X_train_sb_b, y_full)
+print(f"Trained f_sb_b  (LR) on {SB_B_FEATURES}  (n={len(y_full)})")
+
+f_all = _lr()
+f_all.fit(X_train_all, y_full)
+print(f"Trained f_all   (LR) on {ALL_FEATURES}  (n={len(y_full)})")
+
+# SC is trained on a 500-obs/env subsample (invariance test is expensive at 60k rows)
+N_SC_PER_ENV = 500
+rng_sc = np.random.default_rng(SEED)
+sc_idx = np.concatenate(
+    [
+        rng_sc.choice(
+            np.where(E_full == e)[0],
+            size=min(N_SC_PER_ENV, int((E_full == e).sum())),
+            replace=False,
+        )
+        for e in np.unique(E_full)
+    ]
+)
+X_sc = df_train_full[ALL_FEATURES].values[sc_idx]
+y_sc = y_full[sc_idx]
+E_sc = E_full[sc_idx]
+f_sc = StabilizedClassificationClassifier(
+    invariance_test="tram_gcm",
+    test_classifier_type="LR",
+    pred_classifier_type="LR",
+    random_state=SEED,
+    n_jobs=12,
+)
+f_sc.fit(X_sc, y_sc, E_sc)
+print(f"Trained f_sc   (SC TramGCM RF, n={len(y_sc)}, {N_SC_PER_ENV}/env)")
+
+PREDICTORS = {
+    "f_sb": (f_sb, SB_FEATURES),
+    "f_sb_v2": (f_sb_v2, SB_V2_FEATURES),
+    "f_sb_b": (f_sb_b, SB_B_FEATURES),
+    "f_all": (f_all, ALL_FEATURES),
+    "f_sc": (f_sc, ALL_FEATURES),
+}
 
 
 # ─── data collection ──────────────────────────────────────────────────────────
 
-rgb_inputs = {
-    "red": sample_truncnorm_integers(
-        N_SAMPLES, mean=64, std=20, low=0, high=255, random_state=SEED + 11
-    ),
-    "green": sample_truncnorm_integers(
-        N_SAMPLES, mean=32, std=30, low=0, high=255, random_state=SEED + 12
-    ),
-    "blue": sample_truncnorm_integers(
-        N_SAMPLES, mean=90, std=12, low=0, high=255, random_state=SEED + 13
-    ),
-}
-R_all = np.column_stack([rgb_inputs["red"], rgb_inputs["green"], rgb_inputs["blue"]])
+CUBE_PATH = os.path.join(DATA_DIR, "adversarial_action_cube.csv")
 
-# phase 1: set RGB, measure ir_1 -> Y
-print("\nSubmitting phase 1...")
-exp_p1 = rlab.new_experiment(chamber_id="lt-test-b0ni", config="standard")
-exp_p1.from_df(pd.DataFrame(rgb_inputs))
-eid_p1 = exp_p1.submit(tag="adv_follower_phase1")
-time.sleep(2)
+if os.path.exists(CUBE_PATH):
+    print(f"\nLoading action cube from {CUBE_PATH} ...")
+    df_cube = pd.read_csv(CUBE_PATH)
+    R_all, Y_all, B_by_action, Z_by_action = restore_from_cube(df_cube)
+    print(f"Restored: N={len(Y_all)}, M={M}, P(Y=1)={Y_all.mean():.3f}")
+else:
+    rgb_inputs = {
+        "red": sample_truncnorm_integers(
+            N_SAMPLES, mean=64, std=20, low=0, high=255, random_state=SEED + 11
+        ),
+        "green": sample_truncnorm_integers(
+            N_SAMPLES, mean=32, std=30, low=0, high=255, random_state=SEED + 12
+        ),
+        "blue": sample_truncnorm_integers(
+            N_SAMPLES, mean=90, std=12, low=0, high=255, random_state=SEED + 13
+        ),
+    }
+    R_all = np.column_stack(
+        [rgb_inputs["red"], rgb_inputs["green"], rgb_inputs["blue"]]
+    )
 
-print("Waiting for phase 1...")
-wait_for_completion(rlab)
-
-df_p1 = rlab.download_data(eid_p1, root=os.path.join(DIR, "tmp")).dataframe
-Y_all = np.where(df_p1["ir_1"].values > THRESHOLD, 1, 0)
-print(f"Phase 1 complete. N={N_SAMPLES}, P(Y=1)={Y_all.mean():.3f}")
-
-# phase 2: one experiment per action; same RGB, Y-dependent led_3_ir / pol_2
-print(f"\nSubmitting {M} phase 2 experiments...")
-eids_p2 = {}
-for action in ACTIONS:
-    inputs_p2 = {k: v.copy() for k, v in rgb_inputs.items()}
-    inputs_p2["led_3_ir"] = np.clip(
-        action["base_led"] + Y_all * action["coef_led"], 0, None
-    ).astype(int)
-    inputs_p2["pol_2"] = np.clip(
-        action["base_pol"] + Y_all * action["coef_pol"], 0, None
-    ).astype(int)
-
-    exp_p2 = rlab.new_experiment(chamber_id="lt-test-b0ni", config="standard")
-    exp_p2.from_df(pd.DataFrame(inputs_p2))
-    safe_name = action["name"].replace(".", "p")
-    eid = exp_p2.submit(tag=f"adv_follower_phase2_{safe_name}")
-    eids_p2[action["name"]] = eid
+    # phase 1: set RGB, measure ir_1 -> Y
+    print("\nSubmitting phase 1...")
+    exp_p1 = rlab.new_experiment(chamber_id="lt-test-b0ni", config="standard")
+    exp_p1.from_df(pd.DataFrame(rgb_inputs))
+    eid_p1 = exp_p1.submit(tag="adv_follower_phase1")
     time.sleep(2)
 
-print("Waiting for phase 2...")
-wait_for_completion(rlab)
+    print("Waiting for phase 1...")
+    wait_for_completion(rlab)
 
-B_by_action = {}
-Z_by_action = {}
-for action_name, eid in eids_p2.items():
-    df_p2 = rlab.download_data(eid, root=os.path.join(DIR, "tmp")).dataframe
-    B_by_action[action_name] = df_p2[["ir_2", "vis_2"]].values
-    Z_by_action[action_name] = df_p2[["ir_3", "vis_3"]].values
+    df_p1 = rlab.download_data(eid_p1, root=os.path.join(DIR, "tmp")).dataframe
+    Y_all = np.where(df_p1["ir_1"].values > THRESHOLD, 1, 0)
+    print(f"Phase 1 complete. N={N_SAMPLES}, P(Y=1)={Y_all.mean():.3f}")
 
-print(f"Phase 2 complete. Action cube: {N_SAMPLES} units x {M} actions.")
+    # phase 2: one experiment per action; same RGB, Y-dependent led_3_ir / pol_2
+    print(f"\nSubmitting {M} phase 2 experiments...")
+    eids_p2 = {}
+    for action in ACTIONS:
+        inputs_p2 = {k: v.copy() for k, v in rgb_inputs.items()}
+        inputs_p2["led_3_ir"] = np.clip(
+            action["base_led"] + Y_all * action["coef_led"], 0, None
+        ).astype(int)
+        inputs_p2["pol_2"] = np.clip(
+            action["base_pol"] + Y_all * action["coef_pol"], 0, None
+        ).astype(int)
 
-# save action cube
-df_cube = pd.DataFrame(
-    {
-        "Y": Y_all,
-        "red": R_all[:, 0],
-        "green": R_all[:, 1],
-        "blue": R_all[:, 2],
-        **{f"ir_2_{n}": B_by_action[n][:, 0] for n in ACTION_NAMES},
-        **{f"vis_2_{n}": B_by_action[n][:, 1] for n in ACTION_NAMES},
-        **{f"ir_3_{n}": Z_by_action[n][:, 0] for n in ACTION_NAMES},
-        **{f"vis_3_{n}": Z_by_action[n][:, 1] for n in ACTION_NAMES},
-    }
-)
-df_cube.to_csv(os.path.join(DATA_DIR, "adversarial_action_cube.csv"), index=False)
-print("Saved action cube.")
+        exp_p2 = rlab.new_experiment(chamber_id="lt-test-b0ni", config="standard")
+        exp_p2.from_df(pd.DataFrame(inputs_p2))
+        safe_name = action["name"].replace(".", "p")
+        eid = exp_p2.submit(tag=f"adv_follower_phase2_{safe_name}")
+        eids_p2[action["name"]] = eid
+        time.sleep(2)
+
+    print("Waiting for phase 2...")
+    wait_for_completion(rlab)
+
+    B_by_action = {}
+    Z_by_action = {}
+    for action_name, eid in eids_p2.items():
+        df_p2 = rlab.download_data(eid, root=os.path.join(DIR, "tmp")).dataframe
+        B_by_action[action_name] = df_p2[["ir_2", "vis_2"]].values
+        Z_by_action[action_name] = df_p2[["ir_3", "vis_3"]].values
+
+    print(f"Phase 2 complete. Action cube: {N_SAMPLES} units x {M} actions.")
+
+    # save action cube
+    df_cube = pd.DataFrame(
+        {
+            "Y": Y_all,
+            "red": R_all[:, 0],
+            "green": R_all[:, 1],
+            "blue": R_all[:, 2],
+            **{f"ir_2_{n}": B_by_action[n][:, 0] for n in ACTION_NAMES},
+            **{f"vis_2_{n}": B_by_action[n][:, 1] for n in ACTION_NAMES},
+            **{f"ir_3_{n}": Z_by_action[n][:, 0] for n in ACTION_NAMES},
+            **{f"vis_3_{n}": Z_by_action[n][:, 1] for n in ACTION_NAMES},
+        }
+    )
+    df_cube.to_csv(CUBE_PATH, index=False)
+    print("Saved action cube.")
 
 
 # ─── probe / eval split ───────────────────────────────────────────────────────
@@ -318,7 +439,7 @@ for pred_name, (predictor, features) in PREDICTORS.items():
 
 print("\n─── Fixed-action diagnostics (eval split) ───")
 print(
-    f"{'predictor':<10}  {'action':<32}  {'Brier':>8}  {'BCE':>8}  "
+    f"{'predictor':<10}  {'action':<32}  {'Brier':>8}  {'Acc':>8}  {'BCE':>8}  "
     f"{'E[f]':>8}  {'E[f|Y=1]':>10}  {'E[f|Y=0]':>10}  {'FNR':>8}"
 )
 print("─" * 100)
@@ -338,7 +459,7 @@ for pred_name, (predictor, features) in PREDICTORS.items():
         p_m = predictor.predict_proba(X_m)[:, 1]
         met = eval_metrics(Y_eval, p_m)
         print(
-            f"{pred_name:<10}  {action_name:<32}  {met['brier']:>8.4f}  {met['bce']:>8.4f}  "
+            f"{pred_name:<10}  {action_name:<32}  {met['brier']:>8.4f}  {met['acc']:>8.4f}  {met['bce']:>8.4f}  "
             f"{met['ef']:>8.4f}  {met['ef_y1']:>10.4f}  {met['ef_y0']:>10.4f}  {met['fnr']:>8.4f}"
         )
         fixed_rows.append({"predictor": pred_name, "action": action_name, **met})
@@ -427,14 +548,14 @@ for pred_name in PREDICTORS:
     sub = df_budget[df_budget["predictor"] == pred_name].sort_values("budget")
     color = PRED_COLORS[pred_name]
     label = PRED_LABELS[pred_name]
-    axes[0].plot(sub["budget"], sub["adv_ef"], marker="o", color=color, label=label)
+    delta_ef = sub["adv_ef"] - sub["clean_ef"]
+    axes[0].plot(sub["budget"], delta_ef, marker="o", color=color, label=label)
     axes[1].plot(sub["budget"], sub["adv_brier"], marker="o", color=color, label=label)
-    # clean reference (constant across budget) as dashed line
-    axes[0].axhline(sub["clean_ef"].iloc[0], color=color, linestyle="--", alpha=0.35)
     axes[1].axhline(sub["clean_brier"].iloc[0], color=color, linestyle="--", alpha=0.35)
 
+axes[0].axhline(0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
 axes[0].set_xlabel("follower budget")
-axes[0].set_ylabel(r"$\mathbb{E}_{\hat\pi}[f(X)]$")
+axes[0].set_ylabel(r"$\mathbb{E}_{\hat\pi}[f(X)] - \mathbb{E}_{\theta_0}[f(X)]$")
 axes[0].legend()
 axes[1].set_xlabel("follower budget")
 axes[1].set_ylabel(r"Brier score under $\hat\pi$")
