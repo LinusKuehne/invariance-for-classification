@@ -18,9 +18,9 @@ DATA_DIR = os.path.join(DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 SEED = 123
-N_SAMPLES = 2400  # split equally into probe and eval
+N_SAMPLES = 1000  # split equally into probe and eval
 THRESHOLD = 12500  # Y = 1{ir_1 > THRESHOLD}, same as D-spur
-BUDGETS = [0.0, 0.5, 1.0]
+BUDGETS = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 SB_FEATURES = ["red", "green", "blue"]
 SB_V2_FEATURES = ["red", "green", "blue", "vis_2"]
@@ -46,7 +46,7 @@ PRED_LABELS = {
 # ─── action menu ──────────────────────────────────────────────────────────────
 
 
-def make_actions(strengths=(0.5, 1.0)):
+def make_actions(strengths=(0.25, 0.5, 0.75, 1.0, 1.25, 1.4)):
     """Build the finite action menu.
 
     Each entry records (base_led, coef_led, base_pol, coef_pol) and the
@@ -94,7 +94,7 @@ def make_actions(strengths=(0.5, 1.0)):
     return actions
 
 
-ACTIONS = make_actions(strengths=(0.5, 1.0))
+ACTIONS = make_actions()
 M = len(ACTIONS)
 ACTION_NAMES = [a["name"] for a in ACTIONS]
 print(f"Action menu: {M} actions  ({[a['name'] for a in ACTIONS]})")
@@ -118,7 +118,6 @@ def restore_from_cube(df):
 #   led_3_ir = 12·Y,  pol_2 = 30·Y  — moderate positive feedback.
 THETA_REF = "s0.5_led_pos_pol_pos"
 REF_IDX = ACTION_NAMES.index(THETA_REF)
-DIST_TOL = 0.03  # tolerance so strength-0.5 actions land in budget=0.5
 _SCALE = np.array([25.0, 25.0, 60.0, 60.0])
 
 
@@ -140,8 +139,27 @@ _ref_realized = _realized(ACTIONS[REF_IDX])
 
 
 def mechanism_distance(action):
-    """L∞ distance to θ_ref, normalised by (25, 25, 60, 60)."""
+    """L∞ distance from θ_ref: max(|Δl0|/25, |Δl1|/25, |Δp0|/60, |Δp1|/60)."""
     return float(np.max(np.abs(_realized(action) - _ref_realized) / _SCALE))
+
+
+# Precomputed distances; budget b selects the round(b*M) closest actions.
+_action_distances = np.array([mechanism_distance(a) for a in ACTIONS])
+_dist_rank = list(np.argsort(_action_distances))
+
+
+def eligible_by_budget(b: float) -> list[int]:
+    """Return indices of the round(b*M) actions closest to θ_ref (min 1)."""
+    k = max(1, round(b * M))
+    return _dist_rank[:k]
+
+
+for budget in BUDGETS:
+    eligible_idx = eligible_by_budget(budget)
+    thr = _action_distances[eligible_idx[-1]]
+    print(f"\nBudget {budget} ({len(eligible_idx)}/{M} actions, max d={thr:.3f}):")
+    for i in eligible_idx:
+        print(f"  {ACTION_NAMES[i]:35s} d={mechanism_distance(ACTIONS[i]):.3f}")
 
 
 def build_X(R, B, Z, features):
@@ -205,20 +223,6 @@ f_all = RandomForestClassifier(n_estimators=500, random_state=SEED)
 f_all.fit(X_train_all, y_full)
 print(f"Trained f_all   on {ALL_FEATURES}  (n={len(y_full)})")
 
-# Variable importance of ir_2
-# print("\n─── ir_2 variable importance ───")
-# for model, features in [(f_sb_b, SB_B_FEATURES), (f_all, ALL_FEATURES)]:
-#     imp = dict(zip(features, model.feature_importances_, strict=False))
-#     ranked = sorted(imp.items(), key=lambda x: x[1], reverse=True)
-#     ir2_rank = next(i + 1 for i, (f, _) in enumerate(ranked) if f == "ir_2")
-#     print(
-#         f"  {'f_sb_b' if features == SB_B_FEATURES else 'f_all':8s}  "
-#         f"ir_2 importance={imp['ir_2']:.4f}  rank={ir2_rank}/{len(features)}"
-#     )
-#     for feat, val in ranked:
-#         marker = " <--" if feat == "ir_2" else ""
-#         print(f"    {feat:<12} {val:.4f}{marker}")
-
 # SC is trained on a 500-obs/env subsample (invariance test is expensive at 60k rows)
 N_SC_PER_ENV = 500
 rng_sc = np.random.default_rng(SEED)
@@ -256,7 +260,7 @@ PREDICTORS = {
 
 # ─── data collection ──────────────────────────────────────────────────────────
 
-CUBE_PATH = os.path.join(DATA_DIR, "adversarial_action_cube.csv")
+CUBE_PATH = os.path.join(DATA_DIR, "adversarial_action_cube_grid49_N1000.csv")
 
 if os.path.exists(CUBE_PATH):
     print(f"\nLoading action cube from {CUBE_PATH} ...")
@@ -344,8 +348,10 @@ else:
 # ─── probe / eval split ───────────────────────────────────────────────────────
 
 rng = np.random.default_rng(SEED)
-perm = rng.permutation(N_SAMPLES)
-n_probe = N_SAMPLES // 2
+
+N = len(Y_all)
+perm = rng.permutation(N)
+n_probe = N // 2
 probe_idx = perm[:n_probe]
 eval_idx = perm[n_probe:]
 
@@ -421,9 +427,7 @@ print("─" * 90)
 result_rows = []
 
 for budget in BUDGETS:
-    eligible_idx = [
-        i for i, a in enumerate(ACTIONS) if mechanism_distance(a) <= budget + DIST_TOL
-    ]
+    eligible_idx = eligible_by_budget(budget)
 
     for pred_name, (predictor, features) in PREDICTORS.items():
         ms_eligible = probe_mean_score[pred_name][eligible_idx]
