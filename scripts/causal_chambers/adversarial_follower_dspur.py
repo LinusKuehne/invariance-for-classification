@@ -1,47 +1,4 @@
-"""
-Adversarial follower experiment for D-spur (lambda=0).
-
-The follower observes W = R = (red, green, blue) and, without observing Y,
-chooses a coefficient mechanism theta = (base_led, coef_led, base_pol, coef_pol)
-from a finite action menu.  The chamber then sets:
-
-    led_3_ir = base_led + Y * coef_led
-    pol_2    = base_pol + Y * coef_pol
-
-and measures X = (R, B, Z) where B = (ir_2, vis_2) and Z = (ir_3, vis_3).
-
-Two predictors are compared:
-    f_sb   trained only on R = {red, green, blue}  -- stable blanket
-    f_all  trained on all features (R, B, Z)
-
-Action menu (17 actions, strength in {0, 0.5, 1.0}):
-    Each action is parameterised by (l0, l1, p0, p1):
-        led_3_ir | Y=0 = l0,  led_3_ir | Y=1 = l1
-        pol_2    | Y=0 = p0,  pol_2    | Y=1 = p1
-    Converted to (base, coef): base_led=l0, coef_led=l1-l0, base_pol=p0, coef_pol=p1-p0.
-    The reference action s0_zero has (l0,l1,p0,p1)=(0,0,0,0).
-    At strength s: L=round(25*s), P=round(60*s).
-    LED patterns: off=(0,0), pos=(0,L), rev=(L,0).
-    Pol patterns: off=(0,0), pos=(0,P), rev=(P,0).
-    All (off,off) combinations are deduplicated -> 1 + 8 + 8 = 17 actions.
-
-Data collection (two-stage, causal chambers):
-    Phase 1:  set RGB -> measure ir_1 -> Y_i = 1{ir_1 > THRESHOLD}
-    Phase 2:  for each action theta_m, one experiment with Y-dependent
-              led_3_ir / pol_2 -> measures B_i^(m) and Z_i^(m)
-    Yields action cube (R_i, Y_i, {B_i^(m), Z_i^(m)}_m) for i=1,...,N.
-
-Follower best-response (probe split, lambda=0):
-    For each predictor f, bin t in {0,1,2}, and eligible action m:
-        mean_f(t, m) = mean_{i: T_i=t} f(R_i, B_i^(m), Z_i^(m))
-    Best response at budget b: pi_f^b(t) = argmin_{m: strength(m)<=b} mean_f(t, m)
-    RGB bins are tertiles of f_type(R) = f_sb(R) on the probe set.
-
-Evaluation (eval split):
-    For each budget b and predictor f, apply pi_f^b to select (B, Z) per sample.
-    Outputs: fixed_action_results.csv, adversarial_results_by_budget.csv,
-             adversarial_budget_curves.{png,pdf}
-"""
+"""Adversarial follower experiment for D-spur."""
 
 import os
 import time
@@ -50,10 +7,8 @@ import causalchamber.lab as lab
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import log_loss
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from utils import sample_truncnorm_integers, wait_for_completion
 
 from invariance_for_classification import StabilizedClassificationClassifier
@@ -65,7 +20,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SEED = 123
 N_SAMPLES = 2400  # split equally into probe and eval
 THRESHOLD = 12500  # Y = 1{ir_1 > THRESHOLD}, same as D-spur
-K_BINS = 1  # bins of f_type score for follower policy
 BUDGETS = [0.0, 0.5, 1.0]
 
 SB_FEATURES = ["red", "green", "blue"]
@@ -158,6 +112,38 @@ def restore_from_cube(df):
     return R, Y, B, Z
 
 
+# ─── reference mechanism and distance ─────────────────────────────────────────
+
+# θ_ref = (base_led=0, coef_led=12, base_pol=0, coef_pol=30):
+#   led_3_ir = 12·Y,  pol_2 = 30·Y  — moderate positive feedback.
+THETA_REF = "s0.5_led_pos_pol_pos"
+REF_IDX = ACTION_NAMES.index(THETA_REF)
+DIST_TOL = 0.03  # tolerance so strength-0.5 actions land in budget=0.5
+_SCALE = np.array([25.0, 25.0, 60.0, 60.0])
+
+
+def _realized(action):
+    """Return [l0, l1, p0, p1] for an action."""
+    l0 = action["base_led"]
+    return np.array(
+        [
+            l0,
+            l0 + action["coef_led"],
+            action["base_pol"],
+            action["base_pol"] + action["coef_pol"],
+        ],
+        dtype=float,
+    )
+
+
+_ref_realized = _realized(ACTIONS[REF_IDX])
+
+
+def mechanism_distance(action):
+    """L∞ distance to θ_ref, normalised by (25, 25, 60, 60)."""
+    return float(np.max(np.abs(_realized(action) - _ref_realized) / _SCALE))
+
+
 def build_X(R, B, Z, features):
     cols = {
         "red": R[:, 0],
@@ -190,29 +176,34 @@ def eval_metrics(y_true, p, threshold=0.5):
 rlab = lab.Lab(os.path.join(DIR, ".credentials"))
 
 df_train_full = pd.read_csv(os.path.join(DATA_DIR, "d_spur_train.csv"))
+TRAIN_ENVS = [0, 1, 2]
+df_train_full = df_train_full[df_train_full["E"].isin(TRAIN_ENVS)].reset_index(
+    drop=True
+)
 E_full = np.asarray(df_train_full["E"].values, dtype=int)
 y_full = np.asarray(df_train_full["Y"].values, dtype=int)
+print(f"Training on environments {TRAIN_ENVS}: {len(y_full)} obs")
 
 X_train_sb = df_train_full[SB_FEATURES].values
 X_train_sb_v2 = df_train_full[SB_V2_FEATURES].values
 X_train_sb_b = df_train_full[SB_B_FEATURES].values
 X_train_all = df_train_full[ALL_FEATURES].values
 
-# f_sb = RandomForestClassifier(n_estimators=500, random_state=SEED)
-# f_sb.fit(X_train_sb, y_full)
-# print(f"Trained f_sb    on {SB_FEATURES}  (n={len(y_full)})")
+f_sb = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_sb.fit(X_train_sb, y_full)
+print(f"Trained f_sb    on {SB_FEATURES}  (n={len(y_full)})")
 
-# f_sb_v2 = RandomForestClassifier(n_estimators=500, random_state=SEED)
-# f_sb_v2.fit(X_train_sb_v2, y_full)
-# print(f"Trained f_sb_v2 on {SB_V2_FEATURES}  (n={len(y_full)})")
+f_sb_v2 = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_sb_v2.fit(X_train_sb_v2, y_full)
+print(f"Trained f_sb_v2 on {SB_V2_FEATURES}  (n={len(y_full)})")
 
-# f_sb_b = RandomForestClassifier(n_estimators=500, random_state=SEED)
-# f_sb_b.fit(X_train_sb_b, y_full)
-# print(f"Trained f_sb_b  on {SB_B_FEATURES}  (n={len(y_full)})")
+f_sb_b = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_sb_b.fit(X_train_sb_b, y_full)
+print(f"Trained f_sb_b  on {SB_B_FEATURES}  (n={len(y_full)})")
 
-# f_all = RandomForestClassifier(n_estimators=500, random_state=SEED)
-# f_all.fit(X_train_all, y_full)
-# print(f"Trained f_all   on {ALL_FEATURES}  (n={len(y_full)})")
+f_all = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_all.fit(X_train_all, y_full)
+print(f"Trained f_all   on {ALL_FEATURES}  (n={len(y_full)})")
 
 # Variable importance of ir_2
 # print("\n─── ir_2 variable importance ───")
@@ -227,32 +218,6 @@ X_train_all = df_train_full[ALL_FEATURES].values
 #     for feat, val in ranked:
 #         marker = " <--" if feat == "ir_2" else ""
 #         print(f"    {feat:<12} {val:.4f}{marker}")
-
-
-def _lr():
-    return Pipeline(
-        [
-            ("scaler", StandardScaler()),
-            ("clf", LogisticRegression(max_iter=1000, random_state=SEED)),
-        ]
-    )
-
-
-f_sb = _lr()
-f_sb.fit(X_train_sb, y_full)
-print(f"Trained f_sb    (LR) on {SB_FEATURES}  (n={len(y_full)})")
-
-f_sb_v2 = _lr()
-f_sb_v2.fit(X_train_sb_v2, y_full)
-print(f"Trained f_sb_v2 (LR) on {SB_V2_FEATURES}  (n={len(y_full)})")
-
-f_sb_b = _lr()
-f_sb_b.fit(X_train_sb_b, y_full)
-print(f"Trained f_sb_b  (LR) on {SB_B_FEATURES}  (n={len(y_full)})")
-
-f_all = _lr()
-f_all.fit(X_train_all, y_full)
-print(f"Trained f_all   (LR) on {ALL_FEATURES}  (n={len(y_full)})")
 
 # SC is trained on a 500-obs/env subsample (invariance test is expensive at 60k rows)
 N_SC_PER_ENV = 500
@@ -272,8 +237,8 @@ y_sc = y_full[sc_idx]
 E_sc = E_full[sc_idx]
 f_sc = StabilizedClassificationClassifier(
     invariance_test="tram_gcm",
-    test_classifier_type="LR",
-    pred_classifier_type="LR",
+    test_classifier_type="RF",
+    pred_classifier_type="RF",
     random_state=SEED,
     n_jobs=12,
 )
@@ -384,41 +349,18 @@ n_probe = N_SAMPLES // 2
 probe_idx = perm[:n_probe]
 eval_idx = perm[n_probe:]
 
-
-# ─── RGB binning: tertiles of f_type = f_sb on the probe set ─────────────────
-
-# f_type defines the typing rule T(R); it is distinct from the deployed predictor.
-f_type = f_sb
 R_probe = R_all[probe_idx]
-type_scores_probe = f_type.predict_proba(R_probe)[:, 1]
-bin_edges = np.percentile(
-    type_scores_probe, [100 * k / K_BINS for k in range(1, K_BINS)]
-)
-
-
-def assign_bins(scores):
-    """Map scores to bins {0, ..., K_BINS-1} using probe-derived tertile edges."""
-    return np.digitize(scores, bin_edges)
-
-
-T_probe = assign_bins(type_scores_probe)
-T_eval = assign_bins(f_type.predict_proba(R_all[eval_idx])[:, 1])
-
-print(
-    f"\nProbe bin counts (K={K_BINS}): "
-    f"{ {t: int((T_probe == t).sum()) for t in range(K_BINS)} }"
-)
 
 
 # ─── probe mean scores for all predictors x all actions ──────────────────────
 
-# probe_mean_score[pred_name] has shape (K_BINS, M):
-#   probe_mean_score[pred_name][t, m] = mean E[f(X^m) | T=t] on probe split.
+# probe_mean_score[pred_name] has shape (M,):
+#   probe_mean_score[pred_name][m] = mean E[f(X^m)] on probe split.
 
 print("\n─── Computing probe mean scores ───")
 probe_mean_score = {}
 for pred_name, (predictor, features) in PREDICTORS.items():
-    ms = np.full((K_BINS, M), np.nan)
+    ms = np.full(M, np.nan)
     for m, action_name in enumerate(ACTION_NAMES):
         X_m = build_X(
             R_probe,
@@ -426,11 +368,7 @@ for pred_name, (predictor, features) in PREDICTORS.items():
             Z_by_action[action_name][probe_idx],
             features,
         )
-        scores = predictor.predict_proba(X_m)[:, 1]
-        for t in range(K_BINS):
-            mask = T_probe == t
-            if mask.sum() > 0:
-                ms[t, m] = scores[mask].mean()
+        ms[m] = predictor.predict_proba(X_m)[:, 1].mean()
     probe_mean_score[pred_name] = ms
     print(f"  {pred_name}: done")
 
@@ -480,56 +418,50 @@ print(
 )
 print("─" * 90)
 
-THETA0 = ACTIONS[0]["name"]  # s0_zero — used as the clean reference
 result_rows = []
 
 for budget in BUDGETS:
-    eligible_idx = [i for i, a in enumerate(ACTIONS) if a["strength"] <= budget]
+    eligible_idx = [
+        i for i, a in enumerate(ACTIONS) if mechanism_distance(a) <= budget + DIST_TOL
+    ]
 
     for pred_name, (predictor, features) in PREDICTORS.items():
-        ms_eligible = probe_mean_score[pred_name][:, eligible_idx]
-        best_local = np.argmin(ms_eligible, axis=1)  # index within eligible
-        best_m_per_bin = np.array(eligible_idx)[best_local]  # global action index
+        ms_eligible = probe_mean_score[pred_name][eligible_idx]
+        best_m = eligible_idx[int(np.argmin(ms_eligible))]  # global action index
+        best_action = ACTION_NAMES[best_m]
 
-        # clean: always under theta_0 reference
+        # clean: always under theta_ref reference
         X_clean = build_X(
             R_eval,
-            B_by_action[THETA0][eval_idx],
-            Z_by_action[THETA0][eval_idx],
+            B_by_action[THETA_REF][eval_idx],
+            Z_by_action[THETA_REF][eval_idx],
             features,
         )
         p_clean = predictor.predict_proba(X_clean)[:, 1]
         met_clean = eval_metrics(Y_eval, p_clean)
 
-        # adversarial: per-bin best response selects both B and Z
-        B_adv = np.empty((len(eval_idx), 2))
-        Z_adv = np.empty((len(eval_idx), 2))
-        for t in range(K_BINS):
-            mask = T_eval == t
-            aname = ACTION_NAMES[best_m_per_bin[t]]
-            B_adv[mask] = B_by_action[aname][eval_idx][mask]
-            Z_adv[mask] = Z_by_action[aname][eval_idx][mask]
-
-        X_adv = build_X(R_eval, B_adv, Z_adv, features)
+        # adversarial: single best-response action applied to all eval samples
+        X_adv = build_X(
+            R_eval,
+            B_by_action[best_action][eval_idx],
+            Z_by_action[best_action][eval_idx],
+            features,
+        )
         p_adv = predictor.predict_proba(X_adv)[:, 1]
         met_adv = eval_metrics(Y_eval, p_adv)
 
-        selected = [ACTION_NAMES[best_m_per_bin[t]] for t in range(K_BINS)]
         print(
             f"{pred_name:<10}  {budget:>7.1f}  {met_clean['brier']:>12.4f}  {met_adv['brier']:>12.4f}  "
             f"{met_clean['ef']:>12.4f}  {met_adv['ef']:>12.4f}  {met_adv['fnr']:>10.4f}"
         )
-        print(f"    selected actions: {selected}")
+        print(f"    selected action: {best_action}")
         result_rows.append(
             {
                 "predictor": pred_name,
                 "budget": budget,
                 **{f"clean_{k}": v for k, v in met_clean.items()},
                 **{f"adv_{k}": v for k, v in met_adv.items()},
-                **{
-                    f"best_action_bin{t}": ACTION_NAMES[best_m_per_bin[t]]
-                    for t in range(K_BINS)
-                },
+                "best_action": best_action,
             }
         )
 
@@ -555,7 +487,9 @@ for pred_name in PREDICTORS:
 
 axes[0].axhline(0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
 axes[0].set_xlabel("follower budget")
-axes[0].set_ylabel(r"$\mathbb{E}_{\hat\pi}[f(X)] - \mathbb{E}_{\theta_0}[f(X)]$")
+axes[0].set_ylabel(
+    r"$\mathbb{E}_{\hat\pi}[f(X)] - \mathbb{E}_{\theta_{\mathrm{ref}}}[f(X)]$"
+)
 axes[0].legend()
 axes[1].set_xlabel("follower budget")
 axes[1].set_ylabel(r"Brier score under $\hat\pi$")
