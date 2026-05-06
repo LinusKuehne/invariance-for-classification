@@ -30,16 +30,16 @@ ALL_FEATURES = ["red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3"]
 PRED_COLORS = {
     "f_sb": "#0072B2",
     "f_sb_v2": "#56B4E9",
-    "f_sb_b": "#CC79A7",
-    "f_all": "#D55E00",
-    "f_sc": "#009E73",
+    "f_sb_b": "#D55E00",
+    "f_all": "#009E73",
+    "f_sc": "#E69F00",
 }
 PRED_LABELS = {
-    "f_sb": r"$\hat{f}_{\mathrm{SB}}$",
-    "f_sb_v2": r"$\hat{f}_{\mathrm{SB}+\mathrm{vis}_2}$",
-    "f_sb_b": r"$\hat{f}_{\mathrm{SB}+B}$",
-    "f_all": r"$\hat{f}_{\mathrm{all}}$",
-    "f_sc": r"SC (TramGCM, RF)",
+    "f_sb": r"$\hat{f}_{\rm RGB}$",
+    "f_sb_v2": r"$\hat{f}_{\rm RGB + vis\_2}$",
+    "f_sb_b": r"$\hat{f}_{\rm RGB + ir\_2 + vis\_2}$",
+    "f_all": r"$\hat{f}_{\rm all\ variables}$",
+    "f_sc": r"SC-RF",
 }
 
 
@@ -469,7 +469,7 @@ print("\nSaved adversarial_results_by_budget.csv")
 
 # ─── plot ─────────────────────────────────────────────────────────────────────
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=False)
+fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharey=False)
 
 for pred_name in PREDICTORS:
     sub = df_budget[df_budget["predictor"] == pred_name].sort_values("budget")
@@ -481,15 +481,24 @@ for pred_name in PREDICTORS:
     axes[1].axhline(sub["clean_brier"].iloc[0], color=color, linestyle="--", alpha=0.35)
 
 axes[0].axhline(0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-axes[0].set_xlabel("follower budget")
+axes[0].set_xlabel("intervention bound")
 axes[0].set_ylabel(
-    r"$\mathbb{E}_{\hat\pi}[f(X)] - \mathbb{E}_{\theta_{\mathrm{ref}}}[f(X)]$"
+    r"$\mathbb{E}_{e^*(\hat{f})}[\hat{f}(X)] - \mathbb{E}_{e_{\mathrm{ref}}}[\hat{f}(X)]$"
 )
-axes[0].legend()
-axes[1].set_xlabel("follower budget")
-axes[1].set_ylabel(r"Brier score under $\hat\pi$")
-axes[1].legend()
-plt.tight_layout()
+axes[1].set_xlabel("intervention bound")
+axes[1].set_ylabel(r"deployment MSE under $e^*(\hat{f})$")
+
+handles, labels = axes[0].get_legend_handles_labels()
+fig.legend(
+    handles,
+    labels,
+    loc="lower center",
+    bbox_to_anchor=(0.5, 0),
+    ncol=len(PREDICTORS),
+    fontsize=10,
+    frameon=False,
+)
+plt.tight_layout(rect=[0, 0.14, 1, 1])
 
 plot_base = os.path.join(DATA_DIR, "adversarial_budget_curves")
 plt.savefig(plot_base + ".png", dpi=150)
