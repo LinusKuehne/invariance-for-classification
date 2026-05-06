@@ -20,7 +20,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SEED = 123
 N_SAMPLES = 1000  # split equally into probe and eval
 THRESHOLD = 12500  # Y = 1{ir_1 > THRESHOLD}, same as D-spur
-BUDGETS = [0.0, 0.25, 0.5, 0.75, 1.0]
+BUDGETS = [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0]
 
 SB_FEATURES = ["red", "green", "blue"]
 SB_V2_FEATURES = ["red", "green", "blue", "vis_2"]
@@ -114,33 +114,24 @@ def restore_from_cube(df):
 
 # ─── reference mechanism and distance ─────────────────────────────────────────
 
-# θ_ref = (base_led=0, coef_led=12, base_pol=0, coef_pol=30):
-#   led_3_ir = 12·Y,  pol_2 = 30·Y  — moderate positive feedback.
+# θ_ref = training environment: coef_led=12 (led_3_ir = 12·Y), coef_pol=30 (pol_2 = 30·Y).
 THETA_REF = "s0.5_led_pos_pol_pos"
 REF_IDX = ACTION_NAMES.index(THETA_REF)
-_SCALE = np.array([25.0, 25.0, 60.0, 60.0])
-
-
-def _realized(action):
-    """Return [l0, l1, p0, p1] for an action."""
-    l0 = action["base_led"]
-    return np.array(
-        [
-            l0,
-            l0 + action["coef_led"],
-            action["base_pol"],
-            action["base_pol"] + action["coef_pol"],
-        ],
-        dtype=float,
-    )
-
-
-_ref_realized = _realized(ACTIONS[REF_IDX])
+_REF_COEF_LED = ACTIONS[REF_IDX]["coef_led"]  # 12
+_REF_COEF_POL = ACTIONS[REF_IDX]["coef_pol"]  # 30
 
 
 def mechanism_distance(action):
-    """L∞ distance from θ_ref: max(|Δl0|/25, |Δl1|/25, |Δp0|/60, |Δp1|/60)."""
-    return float(np.max(np.abs(_realized(action) - _ref_realized) / _SCALE))
+    """Distance from θ_ref in coefficient space: max(|Δcoef_led|/25, |Δcoef_pol|/60).
+
+    Reversal actions (coef < 0) land at d ≥ 0.72 and are only reachable at high budget.
+    """
+    return float(
+        max(
+            abs(action["coef_led"] - _REF_COEF_LED) / 25.0,
+            abs(action["coef_pol"] - _REF_COEF_POL) / 60.0,
+        )
+    )
 
 
 # Precomputed distances; budget b selects the round(b*M) closest actions.
