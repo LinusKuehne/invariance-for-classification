@@ -23,23 +23,23 @@ THRESHOLD = 12500  # Y = 1{ir_1 > THRESHOLD}, same as D-spur
 BUDGETS = [0.0, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0]
 
 SB_FEATURES = ["red", "green", "blue"]
-SB_V2_FEATURES = ["red", "green", "blue", "vis_2"]
+SB_IR2_FEATURES = ["red", "green", "blue", "ir_2"]
 SB_B_FEATURES = ["red", "green", "blue", "ir_2", "vis_2"]
 ALL_FEATURES = ["red", "green", "blue", "ir_2", "vis_2", "ir_3", "vis_3"]
 
 PRED_COLORS = {
     "f_sb": "#0072B2",
-    "f_sb_v2": "#56B4E9",
+    "f_sb_ir2": "#CC79A7",
     "f_sb_b": "#D55E00",
     "f_all": "#009E73",
     "f_sc": "#E69F00",
 }
 PRED_LABELS = {
-    "f_sb": r"$\hat{f}_{\rm RGB}$",
-    "f_sb_v2": r"$\hat{f}_{\rm RGB + vis\_2}$",
+    "f_sb": r"$\hat{f}_{\rm RGB}$ (wrong stable blanket)",
+    "f_sb_ir2": r"$\hat{f}_{\rm RGB + ir\_2}$",
     "f_sb_b": r"$\hat{f}_{\rm RGB + ir\_2 + vis\_2}$",
     "f_all": r"$\hat{f}_{\rm all\ variables}$",
-    "f_sc": r"SC-RF",
+    "f_sc": r"$\hat{f}^{\mathrm{SC}}$",
 }
 
 
@@ -194,21 +194,21 @@ y_full = np.asarray(df_train_full["Y"].values, dtype=int)
 print(f"Training on environments {TRAIN_ENVS}: {len(y_full)} obs")
 
 X_train_sb = df_train_full[SB_FEATURES].values
-X_train_sb_v2 = df_train_full[SB_V2_FEATURES].values
+X_train_sb_ir2 = df_train_full[SB_IR2_FEATURES].values
 X_train_sb_b = df_train_full[SB_B_FEATURES].values
 X_train_all = df_train_full[ALL_FEATURES].values
 
 f_sb = RandomForestClassifier(n_estimators=500, random_state=SEED)
 f_sb.fit(X_train_sb, y_full)
-print(f"Trained f_sb    on {SB_FEATURES}  (n={len(y_full)})")
+print(f"Trained f_sb     on {SB_FEATURES}  (n={len(y_full)})")
 
-f_sb_v2 = RandomForestClassifier(n_estimators=500, random_state=SEED)
-f_sb_v2.fit(X_train_sb_v2, y_full)
-print(f"Trained f_sb_v2 on {SB_V2_FEATURES}  (n={len(y_full)})")
+f_sb_ir2 = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_sb_ir2.fit(X_train_sb_ir2, y_full)
+print(f"Trained f_sb_ir2 on {SB_IR2_FEATURES}  (n={len(y_full)})")
 
 f_sb_b = RandomForestClassifier(n_estimators=500, random_state=SEED)
 f_sb_b.fit(X_train_sb_b, y_full)
-print(f"Trained f_sb_b  on {SB_B_FEATURES}  (n={len(y_full)})")
+print(f"Trained f_sb_b   on {SB_B_FEATURES}  (n={len(y_full)})")
 
 f_all = RandomForestClassifier(n_estimators=500, random_state=SEED)
 f_all.fit(X_train_all, y_full)
@@ -242,7 +242,7 @@ print(f"Trained f_sc   (SC TramGCM RF, n={len(y_sc)}, {N_SC_PER_ENV}/env)")
 
 PREDICTORS = {
     "f_sb": (f_sb, SB_FEATURES),
-    "f_sb_v2": (f_sb_v2, SB_V2_FEATURES),
+    "f_sb_ir2": (f_sb_ir2, SB_IR2_FEATURES),
     "f_sb_b": (f_sb_b, SB_B_FEATURES),
     "f_all": (f_all, ALL_FEATURES),
     "f_sc": (f_sc, ALL_FEATURES),
@@ -469,24 +469,27 @@ print("\nSaved adversarial_results_by_budget.csv")
 
 # ─── plot ─────────────────────────────────────────────────────────────────────
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharey=False)
+fig, axes = plt.subplots(1, 2, figsize=(10, 3.0), sharey=False)
+
+df_plot = df_budget[df_budget["budget"] <= 0.5]
 
 for pred_name in PREDICTORS:
-    sub = df_budget[df_budget["predictor"] == pred_name].sort_values("budget")
+    sub = df_plot[df_plot["predictor"] == pred_name].sort_values("budget")
     color = PRED_COLORS[pred_name]
     label = PRED_LABELS[pred_name]
     delta_ef = sub["adv_ef"] - sub["clean_ef"]
     axes[0].plot(sub["budget"], delta_ef, marker="o", color=color, label=label)
     axes[1].plot(sub["budget"], sub["adv_brier"], marker="o", color=color, label=label)
-    axes[1].axhline(sub["clean_brier"].iloc[0], color=color, linestyle="--", alpha=0.35)
+    axes[1].axhline(sub["clean_brier"].iloc[0], color=color, linestyle=":", alpha=0.35)
 
 axes[0].axhline(0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-axes[0].set_xlabel("intervention bound")
+axes[0].set_xlabel("intervention bound", fontsize=12)
 axes[0].set_ylabel(
-    r"$\mathbb{E}_{e^*(\hat{f})}[\hat{f}(X)] - \mathbb{E}_{e_{\mathrm{ref}}}[\hat{f}(X)]$"
+    r"$\mathbb{E}_{e^*(\hat{f})}[\hat{f}(X)] - \mathbb{E}_{e_{\mathrm{ref}}}[\hat{f}(X)]$",
+    fontsize=12,
 )
-axes[1].set_xlabel("intervention bound")
-axes[1].set_ylabel(r"deployment MSE under $e^*(\hat{f})$")
+axes[1].set_xlabel("intervention bound", fontsize=12)
+axes[1].set_ylabel("deployment MSE\n" + r"under $e^*(\hat{f})$", fontsize=12)
 
 handles, labels = axes[0].get_legend_handles_labels()
 fig.legend(
@@ -495,13 +498,13 @@ fig.legend(
     loc="lower center",
     bbox_to_anchor=(0.5, 0),
     ncol=len(PREDICTORS),
-    fontsize=10,
+    fontsize=12,
     frameon=False,
 )
-plt.tight_layout(rect=[0, 0.14, 1, 1])
+plt.tight_layout(rect=[0, 0.17, 1, 1])
 
 plot_base = os.path.join(DATA_DIR, "adversarial_budget_curves")
-plt.savefig(plot_base + ".png", dpi=150)
+plt.savefig(plot_base + ".png", dpi=180)
 plt.savefig(plot_base + ".pdf")
 plt.close()
 print(f"Saved plot to {plot_base}.{{png,pdf}}")
