@@ -114,7 +114,9 @@ class AttackMechanisms(nn.Module):
         pieces = [y, x2, noise]
         if self.x4_uses_x1_x3:
             if x1 is None or x3 is None:
-                raise ValueError("x1 and x3 are required when x4_uses_x1_x3 is enabled.")
+                raise ValueError(
+                    "x1 and x3 are required when x4_uses_x1_x3 is enabled."
+                )
             pieces.extend([x1, x3])
         return self.x4_net(torch.cat(pieces, dim=1))
 
