@@ -38,8 +38,8 @@ PRED_LABELS = {
     "f_sb": r"$\hat{f}_{\rm RGB}$ (wrong stable blanket)",
     "f_sb_ir2": r"$\hat{f}_{\rm RGB + ir\_2}$",
     "f_sb_b": r"$\hat{f}_{\rm RGB + ir\_2 + vis\_2}$",
-    "f_all": r"$\hat{f}_{\rm all\ variables}$",
-    "f_sc": r"$\hat{f}^{\mathrm{SC}}$",
+    "f_all": r"$\hat{f}_{\rm all}$",
+    "f_sc": r"$\hat{f}^{\;\mathrm{SC}}$",
 }
 
 
@@ -491,6 +491,9 @@ axes[0].set_ylabel(
 axes[1].set_xlabel("intervention bound", fontsize=12)
 axes[1].set_ylabel("deployment MSE\n" + r"under $e^*(\hat{f})$", fontsize=12)
 
+for ax in axes:
+    ax.tick_params(axis="both", labelsize=14)
+
 handles, labels = axes[0].get_legend_handles_labels()
 fig.legend(
     handles,
@@ -498,7 +501,7 @@ fig.legend(
     loc="lower center",
     bbox_to_anchor=(0.5, 0),
     ncol=len(PREDICTORS),
-    fontsize=12,
+    fontsize=14,
     frameon=False,
 )
 plt.tight_layout(rect=[0, 0.17, 1, 1])
