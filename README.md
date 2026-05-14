@@ -1,35 +1,57 @@
-# invariance-for-classification
+Code for the NeurIPS submission. The repository has two parts:
 
-![Build Status](https://github.com/LinusKuehne/invariance-for-classification/actions/workflows/tests.yml/badge.svg)
+- **`scripts/causal_chambers/`** — real-data experiments on the causal chambers dataset (D-spur)
+- **`synthetic_stable_blanket_experiments/`** — synthetic SCM experiments; see its own [README](synthetic_stable_blanket_experiments/README.md)
 
-First, clone the repo:
+## Setup
+
+Create and activate a virtual environment:
+
 ```bash
-git clone https://github.com/LinusKuehne/invariance-for-classification.git
-```
-
-Next, create a python virtual environment:
-```bash
-cd invariance-for-classification
 python -m venv venv
-source venv/bin/activate
-# or venv\Scripts\activate for windows
+source venv/bin/activate   # Windows: venv\Scripts\activate
 ```
 
-Install in editable mode with `pip`:
+Install in editable mode:
+
 ```bash
 pip install --upgrade pip
-pip install -e ".[dev]" # install in editable mode (for modifying the code and seeing the changes immediately) and with developer dependencies
+pip install -e ".[dev]"
 ```
 
-Finally, set up pre-commit hooks and verify their installation:
+## Reproducing paper figures
+
+### Causal chambers (real-data experiments)
+
+The data files are already included in `scripts/causal_chambers/data/`. Run both scripts from the `scripts/causal_chambers/` directory:
+
+```bash
+cd scripts/causal_chambers
+```
+
+**Conditional independence test table** (printed as LaTeX to stdout):
+
+```bash
+python gcm_ir1_ir2.py
+```
+
+This requires R with the `wGCM` package installed.
+
+**Adversarial budget curves figure** (`data/adversarial_budget_curves.{png,pdf}`):
+
+```bash
+python adversarial_follower_dspur.py
+```
+
+### Synthetic experiments
+
+See [`synthetic_stable_blanket_experiments/README.md`](synthetic_stable_blanket_experiments/README.md) for the full instructions on reproducing those figures.
+
+## Development
+
 ```bash
 pre-commit install
-pre-commit run --all-files
-```
-
-When editing, this can be used as follows:
-```bash
 ruff check .          # lint
-ruff check --fix .    # auto-fix lint issues
-ruff format .         # autoformat code
+ruff check --fix .    # auto-fix
+ruff format .         # format
 ```
