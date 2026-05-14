@@ -11,7 +11,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--output-dir", type=str, default="outputs")
     p.add_argument("--device", type=str, default="cpu")
-    p.add_argument("--torch-num-threads", type=int, default=1)
+    p.add_argument("--torch-num-threads", type=int, default=12)
     p.add_argument("--n-train", type=int, default=50000)
     p.add_argument(
         "--train-size-sweep",

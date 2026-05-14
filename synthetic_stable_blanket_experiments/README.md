@@ -63,6 +63,34 @@ Evaluation is always by MSE, and each method is evaluated **only on its own opti
 - `synthetic_experiments/experiment.py`: orchestration and CSV output
 - `synthetic_experiments/plotting.py`: plots of own-adversary MSE vs bound
 
+## Reproducing paper figures
+
+Run the four experiment configurations below (order does not matter; the train-size sweep will take the longest). `run_minimax_experiment.py` is not used for the paper figures.
+
+```bash
+python run_experiments.py --output-dir outputs_lingauss --lineargaussian
+```
+
+```bash
+python run_experiments.py --output-dir outputs_standard
+```
+
+```bash
+python run_experiments.py --output-dir outputs_train-size-sweep --train-size-sweep 1000 4000 50000
+```
+
+```bash
+python run_experiments.py --output-dir outputs_x4-uses-x1-x3 --x4-uses-x1-x3
+```
+
+Then generate all figures:
+
+```bash
+python plot_paper_figures.py
+```
+
+Figures are saved to `paper_plots/`.
+
 ## Quick smoke test
 
 ```bash

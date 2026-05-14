@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.lines import Line2D
-import pandas as pd
-
 from synthetic_experiments.plotting import (
     METHOD_COLORS,
     METHOD_LABELS,
@@ -175,7 +174,7 @@ def _make_two_panel_figure(
         _plot_train_sweep_panel if left_train_sweep else _plot_standard_panel,
         _plot_train_sweep_panel if right_train_sweep else _plot_standard_panel,
     ]
-    for ax, spec, plotter in zip(axes, [left, right], plotters):
+    for ax, spec, plotter in zip(axes, [left, right], plotters, strict=False):
         plotter(ax, spec)
     axes[0].set_ylabel("deployment MSE", fontsize=8)
     _add_method_legend(fig)
@@ -192,7 +191,7 @@ def _make_multi_panel_figure(
 ) -> None:
     fig, axes = plt.subplots(*shape, figsize=figsize, sharey=False)
     flat_axes = list(axes.ravel())
-    for ax, spec in zip(flat_axes, specs):
+    for ax, spec in zip(flat_axes, specs, strict=False):
         _plot_standard_panel(ax, spec)
     for row_idx in range(shape[0]):
         flat_axes[row_idx * shape[1]].set_ylabel("deployment MSE", fontsize=8)
@@ -203,7 +202,7 @@ def _make_multi_panel_figure(
 
 def _make_grouped_row_figure(output_path: Path, specs: list[PanelSpec]) -> None:
     fig, axes = plt.subplots(1, 4, figsize=(9.0, 2.45), sharey=False)
-    for ax, spec in zip(axes, specs):
+    for ax, spec in zip(axes, specs, strict=False):
         _plot_standard_panel(ax, spec)
         ax.title.set_fontsize(11)
         ax.xaxis.label.set_fontsize(10)
@@ -244,9 +243,38 @@ def _make_grouped_two_panel_figure(
         _plot_train_sweep_panel if left_train_sweep else _plot_standard_panel,
         _plot_train_sweep_panel if right_train_sweep else _plot_standard_panel,
     ]
-    for ax, spec, plotter in zip(axes, [left, right], plotters):
+    for ax, spec, plotter in zip(axes, [left, right], plotters, strict=False):
         plotter(ax, spec)
     axes[0].set_ylabel("deployment MSE", fontsize=8)
+
+    if left_train_sweep:
+        results = _read_results(left.output_dir)
+        group = results[results["objective"] == left.objective]
+        train_sizes = sorted(group["train_size"].unique())
+        if left.endpoint_train_sizes_only and len(train_sizes) > 2:
+            train_sizes = [train_sizes[0], train_sizes[-1]]
+        style_by_size = {
+            ts: TRAIN_SIZE_LINESTYLES[idx % len(TRAIN_SIZE_LINESTYLES)]
+            for idx, ts in enumerate(train_sizes)
+        }
+        train_size_handles = [
+            Line2D(
+                [0],
+                [0],
+                color="black",
+                linestyle=style_by_size[ts],
+                linewidth=1.3,
+                label=f"n = {ts:,}",
+            )
+            for ts in train_sizes
+        ]
+        axes[0].legend(
+            handles=train_size_handles,
+            loc="upper center",
+            fontsize=6,
+            frameon=False,
+            ncol=1,
+        )
 
     for label, x_position in [(left_header, 0.28), (right_header, 0.74)]:
         fig.text(

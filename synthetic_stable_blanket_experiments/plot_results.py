@@ -4,7 +4,6 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-
 from synthetic_experiments.plotting import save_plots
 
 
