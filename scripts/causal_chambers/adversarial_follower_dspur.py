@@ -198,47 +198,67 @@ X_train_sb_ir2 = df_train_full[SB_IR2_FEATURES].values
 X_train_sb_b = df_train_full[SB_B_FEATURES].values
 X_train_all = df_train_full[ALL_FEATURES].values
 
-f_sb = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_sb = RandomForestClassifier(n_estimators=100, random_state=SEED)
 f_sb.fit(X_train_sb, y_full)
 print(f"Trained f_sb     on {SB_FEATURES}  (n={len(y_full)})")
 
-f_sb_ir2 = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_sb_ir2 = RandomForestClassifier(n_estimators=100, random_state=SEED)
 f_sb_ir2.fit(X_train_sb_ir2, y_full)
 print(f"Trained f_sb_ir2 on {SB_IR2_FEATURES}  (n={len(y_full)})")
 
-f_sb_b = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_sb_b = RandomForestClassifier(n_estimators=100, random_state=SEED)
 f_sb_b.fit(X_train_sb_b, y_full)
 print(f"Trained f_sb_b   on {SB_B_FEATURES}  (n={len(y_full)})")
 
-f_all = RandomForestClassifier(n_estimators=500, random_state=SEED)
+f_all = RandomForestClassifier(n_estimators=100, random_state=SEED)
 f_all.fit(X_train_all, y_full)
 print(f"Trained f_all   on {ALL_FEATURES}  (n={len(y_full)})")
 
-# SC is trained on a 500-obs/env subsample (invariance test is expensive at 60k rows)
-N_SC_PER_ENV = 500
-rng_sc = np.random.default_rng(SEED)
-sc_idx = np.concatenate(
-    [
-        rng_sc.choice(
-            np.where(E_full == e)[0],
-            size=min(N_SC_PER_ENV, int((E_full == e).sum())),
-            replace=False,
-        )
-        for e in np.unique(E_full)
-    ]
-)
-X_sc = df_train_full[ALL_FEATURES].values[sc_idx]
-y_sc = y_full[sc_idx]
-E_sc = E_full[sc_idx]
 f_sc = StabilizedClassificationClassifier(
     invariance_test="tram_gcm",
     test_classifier_type="RF",
     pred_classifier_type="RF",
     random_state=SEED,
-    n_jobs=12,
+    n_jobs=8,
 )
-f_sc.fit(X_sc, y_sc, E_sc)
-print(f"Trained f_sc   (SC TramGCM RF, n={len(y_sc)}, {N_SC_PER_ENV}/env)")
+
+f_sc.fit(X_train_all, y_full, E_full)
+print(f"Trained f_sc   (SC TramGCM RF, n={len(y_full)})")
+
+# ─── inspect f_sc ensemble ────────────────────────────────────────────────────
+print(
+    f"\nf_sc ensemble: {f_sc.n_predictive_subsets_} active / "
+    f"{f_sc.n_invariant_subsets_} invariant / {f_sc.n_subsets_total_} total subsets"
+)
+sb_b_idx_set = frozenset(ALL_FEATURES.index(f) for f in SB_B_FEATURES)
+active_subsets_named = []
+for stat in sorted(f_sc.active_subsets_, key=lambda s: -s["score"]):
+    names = [ALL_FEATURES[i] for i in stat["subset"]]
+    marker = "  <-- == SB_B" if frozenset(stat["subset"]) == sb_b_idx_set else ""
+    print(
+        f"  w={stat['weight']:.3f}  score={stat['score']:+.4f}  "
+        f"p={stat['p_value']:.3f}  {names}{marker}"
+    )
+    active_subsets_named.append(names)
+
+print("\nAll invariant subsets (sorted by score):")
+for stat in sorted(f_sc._all_invariant_fitted_, key=lambda s: -s["score"]):
+    names = [ALL_FEATURES[i] for i in stat["subset"]]
+    in_active = any(stat["subset"] == a["subset"] for a in f_sc.active_subsets_)
+    marker = "  *active*" if in_active else ""
+    marker += "  <-- == SB_B" if frozenset(stat["subset"]) == sb_b_idx_set else ""
+    print(f"  score={stat['score']:+.4f}  p={stat['p_value']:.3f}  {names}{marker}")
+
+sb_b_in_invariant = any(
+    frozenset(stat["subset"]) == sb_b_idx_set for stat in f_sc._all_invariant_fitted_
+)
+sb_b_in_active = any(
+    frozenset(stat["subset"]) == sb_b_idx_set for stat in f_sc.active_subsets_
+)
+print(
+    f"\nSB_B = {SB_B_FEATURES}: in invariant? {sb_b_in_invariant}; "
+    f"in active ensemble? {sb_b_in_active}"
+)
 
 PREDICTORS = {
     "f_sb": (f_sb, SB_FEATURES),
@@ -507,7 +527,7 @@ fig.legend(
 plt.tight_layout(rect=[0, 0.17, 1, 1])
 
 plot_base = os.path.join(DATA_DIR, "adversarial_budget_curves")
-plt.savefig(plot_base + ".png", dpi=180)
+plt.savefig(plot_base + ".png", dpi=300)
 plt.savefig(plot_base + ".pdf")
 plt.close()
 print(f"Saved plot to {plot_base}.{{png,pdf}}")
