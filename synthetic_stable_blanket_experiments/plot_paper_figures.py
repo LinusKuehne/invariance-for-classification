@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.transforms import Bbox
 from synthetic_experiments.plotting import (
     METHOD_COLORS,
     METHOD_LABELS,
@@ -209,9 +210,26 @@ def _make_grouped_row_figure(output_path: Path, specs: list[PanelSpec]) -> None:
         ax.tick_params(axis="both", labelsize=9)
     axes[0].set_ylabel("deployment MSE", fontsize=10)
 
+    _add_method_legend(fig, fontsize=9, markersize=5)
+    fig.tight_layout(rect=(0, 0.08, 1, 0.90))
+
+    fig.canvas.draw()
+    inv = fig.transFigure.inverted()
+
+    def _pair_center(ax_a, ax_b) -> float:
+        bboxes = [
+            bbox
+            for bbox in (ax_a.get_tightbbox(), ax_b.get_tightbbox())
+            if bbox is not None
+        ]
+        union = Bbox.union(bboxes).transformed(inv)
+        return (union.x0 + union.x1) / 2
+
+    left_pair_center = _pair_center(axes[0], axes[1])
+    right_pair_center = _pair_center(axes[2], axes[3])
     for label, x_position in [
-        ("Linear-Gaussian SCM", 0.285),
-        ("Nonlinear SCM", 0.725),
+        ("Linear-Gaussian SCM", left_pair_center),
+        ("Nonlinear SCM", right_pair_center),
     ]:
         fig.text(
             x_position,
@@ -223,8 +241,6 @@ def _make_grouped_row_figure(output_path: Path, specs: list[PanelSpec]) -> None:
             fontweight="bold",
         )
 
-    _add_method_legend(fig, fontsize=9, markersize=5)
-    fig.tight_layout(rect=(0, 0.08, 1, 0.90))
     _save_figure(fig, output_path)
 
 
@@ -270,7 +286,7 @@ def _make_grouped_two_panel_figure(
         ]
         axes[0].legend(
             handles=train_size_handles,
-            loc="upper center",
+            loc="upper left",
             fontsize=6,
             frameon=False,
             ncol=1,
@@ -328,20 +344,20 @@ def main() -> None:
             "prediction",
         ),
         left_header="Train-size sweep",
-        right_header=r"$X_4$ attack uses $X_1,X_3$",
+        right_header=r"$X_4$ intervention uses $X_1,X_3$",
         left_train_sweep=True,
     )
 
     first_two_figure_specs = [
-        PanelSpec("MSE attack", root / "outputs_lingauss", "mse"),
+        PanelSpec("maximize MSE", root / "outputs_lingauss", "mse"),
         PanelSpec(
-            "prediction attack",
+            "minimize prediction",
             root / "outputs_lingauss",
             "prediction",
         ),
-        PanelSpec("MSE attack", root / "outputs_standard", "mse"),
+        PanelSpec("maximize MSE", root / "outputs_standard", "mse"),
         PanelSpec(
-            "prediction attack",
+            "minimize prediction",
             root / "outputs_standard",
             "prediction",
         ),
